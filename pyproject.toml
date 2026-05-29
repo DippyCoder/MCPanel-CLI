@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpanel-cli"
+version = "1.1.0"
+description = "MCPanel — Minecraft Server Panel, as a Linux CLI (terminal backend for MCPanel)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "DippyCoder", email = "planewriter255@gmail.com" }]
+keywords = ["minecraft", "server", "panel", "cli", "mcpanel"]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/DippyCoder/MCPanel"
+Source = "https://github.com/DippyCoder/MCPanel"
+
+[project.scripts]
+mcpanel = "mcpanel.cli:main"
+
+[tool.setuptools]
+packages = ["mcpanel"]
+
+[tool.setuptools.package-data]
+mcpanel = ["bundled_themes/**/*"]

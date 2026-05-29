@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Standalone launcher — runs the MCPanel CLI straight from a checkout without
+installing. Just put this file (or a symlink to it) on your PATH."""
+
+import os
+import sys
+
+# Make the repo's package importable when run from a checkout.
+# Resolve symlinks so this works when linked into ~/.local/bin too.
+_REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+
+from mcpanel.cli import main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(main())
