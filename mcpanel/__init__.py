@@ -9,5 +9,5 @@ the terminal itself can act as the MCPanel backend.
   - Interactive GUI: mcpanel cli                             (TUI, WIP)
 """
 
-__version__ = "1.1.0"
+__version__ = "1.0.0"
 __app_name__ = "MCPanel"
