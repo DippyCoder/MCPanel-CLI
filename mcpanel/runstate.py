@@ -95,12 +95,11 @@ def send_request(server_id, obj, timeout=5.0):
         return {"ok": False, "error": str(e)}
 
 
-def read_log(server_id):
-    """Return the full structured log for the current run as a list of
-    {time, text, type} records (mirrors get-server-log)."""
+def read_log_file(path):
+    """Read a .log.jsonl file and return a list of {time, text, type} records."""
     out = []
     try:
-        with open(log_path(server_id), "r", encoding="utf-8") as f:
+        with open(path, "r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -112,3 +111,45 @@ def read_log(server_id):
     except FileNotFoundError:
         pass
     return out
+
+
+def read_log(server_id):
+    """Return the full structured log for the current/last run."""
+    return read_log_file(log_path(server_id))
+
+
+_SESSION_KEEP = 5
+
+
+def session_log_paths(server_id):
+    """Return archived session log paths sorted newest-first."""
+    prefix = server_id + ".log."
+    suffix = ".jsonl"
+    result = []
+    try:
+        for name in os.listdir(paths.RUN_DIR):
+            if name.startswith(prefix) and name.endswith(suffix):
+                mid = name[len(prefix):-len(suffix)]
+                if mid.isdigit():
+                    result.append((int(mid), os.path.join(paths.RUN_DIR, name)))
+    except OSError:
+        pass
+    return [p for _, p in sorted(result, reverse=True)]
+
+
+def rotate_log(server_id):
+    """Archive current log and prune old sessions, keeping _SESSION_KEEP total."""
+    current = log_path(server_id)
+    if os.path.exists(current):
+        ts = int(time.time() * 1000)
+        archived = os.path.join(paths.RUN_DIR, f"{server_id}.log.{ts}.jsonl")
+        try:
+            os.rename(current, archived)
+        except OSError:
+            pass
+    # Keep at most SESSION_KEEP-1 archives (the new active session will be the Nth)
+    for excess in session_log_paths(server_id)[_SESSION_KEEP - 1:]:
+        try:
+            os.remove(excess)
+        except OSError:
+            pass

@@ -19,6 +19,10 @@ from .http import download_file
 from .ping import ping_server
 from . import util
 
+# Parent directory of the mcpanel package — used to set PYTHONPATH when
+# spawning the supervisor subprocess so it can import mcpanel regardless of cwd.
+_PKG_PARENT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 def _now_ms():
     return int(time.time() * 1000)
@@ -270,10 +274,14 @@ def _spawn_supervisor(server_id, timeout=8.0):
         os.remove(runstate.boot_err_path(server_id))
     except OSError:
         pass
+    env = os.environ.copy()
+    pp = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = _PKG_PARENT + (":" + pp if pp else "")
     subprocess.Popen(
         [sys.executable, "-m", "mcpanel.supervisor", server_id],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True,
+        env=env,
     )
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -361,7 +369,37 @@ def send_command(args, progress=None):
 
 
 def get_server_log(args, progress=None):
+    if getattr(args, "session", None) is not None:
+        return read_session_log(args, progress)
     return runstate.read_log(args.id)
+
+
+def list_session_logs(args, progress=None):
+    log_paths = runstate.session_log_paths(args.id)
+    sessions = []
+    for i, p in enumerate(log_paths):
+        fname = os.path.basename(p)
+        # filename: <id>.log.<ts>.jsonl
+        try:
+            ts = int(fname[len(args.id) + 5:-6])  # strip "<id>.log." and ".jsonl"
+        except Exception:
+            ts = 0
+        sessions.append({"n": i + 1, "timestamp": ts, "path": p})
+    return {"sessions": sessions}
+
+
+def read_session_log(args, progress=None):
+    n = getattr(args, "session", 1) or 1
+    log_paths = runstate.session_log_paths(args.id)
+    if not log_paths:
+        return [{"time": int(time.time() * 1000),
+                 "text": "No archived sessions found.", "type": "err"}]
+    if n < 1 or n > len(log_paths):
+        count = len(log_paths)
+        return [{"time": int(time.time() * 1000),
+                 "text": f"Session {n} not found ({count} archived session{'s' if count != 1 else ''} available).",
+                 "type": "err"}]
+    return runstate.read_log_file(log_paths[n - 1])
 
 
 def is_server_running(args, progress=None):

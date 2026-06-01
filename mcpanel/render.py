@@ -167,6 +167,20 @@ def render_logs(result, args):
             print(text)
 
 
+def render_sessions(result, args):
+    if _err(result):
+        return
+    sessions = result.get("sessions", [])
+    if not sessions:
+        print(dim("No archived sessions. Sessions are saved at the start of each new run."))
+        return
+    print(bold(f"{'N':<4} {'STARTED':<20}"))
+    for s in sessions:
+        print(f"  {s['n']:<3} {_ts(s.get('timestamp', 0))}")
+    sid = getattr(args, "id", "<id>")
+    print(dim(f"\nView a session: mcpanel logs server -id {sid} -n <N>"))
+
+
 # ─── versions ─────────────────────────────────────────────────────────────────
 def render_versions(result, args):
     if _err(result):
@@ -293,6 +307,7 @@ RENDERERS = {
     "send-command": render_success,
     "get-server-log": render_logs,
     "logs": render_logs,
+    "list-sessions": render_sessions,
     "status": render_status,
     "ping": render_ping,
     "stats": render_stats,

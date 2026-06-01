@@ -196,7 +196,13 @@ def add_commands(sub):
     p = sub.add_parser("logs", help="show a server's console log")
     noun(p); f_id(p)
     p.add_argument("-f", "--follow", dest="follow", action="store_true", help="stream new output (human mode)")
-    p.set_defaults(func=servers.get_server_log, action="logs", follow=False)
+    p.add_argument("-n", "--session", dest="session", type=int, default=None,
+                   metavar="<N>", help="show archived session N (1=most recent, see: mcpanel sessions)")
+    p.set_defaults(func=servers.get_server_log, action="logs", follow=False, session=None)
+
+    p = sub.add_parser("sessions", help="list archived log sessions for a server")
+    noun(p); f_id(p)
+    p.set_defaults(func=servers.list_session_logs, action="list-sessions")
 
     p = sub.add_parser("console", help="attach to a server's live console (follow)")
     noun(p); f_id(p)
@@ -393,8 +399,9 @@ def main(argv=None):
         args.func(args)
         return 0
 
-    # human log following
-    if getattr(args, "action", None) == "logs" and not is_json and getattr(args, "follow", False):
+    # human log following (skip if a specific archived session was requested)
+    if (getattr(args, "action", None) == "logs" and not is_json
+            and getattr(args, "follow", False) and getattr(args, "session", None) is None):
         if not getattr(args, "id", None):
             print(render.red("✗ -id is required"))
             return 1

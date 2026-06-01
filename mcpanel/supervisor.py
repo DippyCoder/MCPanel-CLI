@@ -119,7 +119,7 @@ class Supervisor:
             return
 
         cmd = build_java_command(srv, jar)
-        # Fresh log per run, like the in-memory log the app kept.
+        runstate.rotate_log(self.id)
         self.log_file = open(runstate.log_path(self.id), "w", encoding="utf-8")
 
         try:
