@@ -64,6 +64,14 @@ def _cli_tui(args=None, progress=None):
     return None
 
 
+def _debug_first_start(args=None, progress=None):
+    import os
+    flag = os.path.join(paths.USER_DATA, "debug_first_start")
+    with open(flag, "w") as f:
+        f.write("")
+    return {"success": True, "message": "First-start UI will show on the next MCPanel launch."}
+
+
 # ─── flag helpers ────────────────────────────────────────────────────────────
 def f_id(p, required=True):
     p.add_argument("-id", "--id", dest="id", required=required, metavar="<id>", help="server/profile/theme id")
@@ -301,6 +309,12 @@ def add_commands(sub):
     cfgsub = cfgp.add_subparsers(dest="noun", metavar="<show|path>", required=True)
     leaf(cfgsub, "show", servers.get_config, "config")
     leaf(cfgsub, "path", _config_path, "config")
+
+    # debug --------------------------------------------------------------
+    dbg = sub.add_parser("debug", help="debugging utilities for MCPanel development")
+    dbgsub = dbg.add_subparsers(dest="noun", metavar="<command>", required=True)
+    leaf(dbgsub, "first_start", _debug_first_start, "debug-first-start",
+         help="force the first-start UI to show on the next MCPanel launch")
 
 
 def build_parser():

@@ -429,7 +429,21 @@ def get_server_dir_stats(args, progress=None):
     srv = find_server(cfg, args.id)
     if not srv or not os.path.exists(srv["dir"]):
         return {"size": 0}
-    return {"size": util.get_dir_size(srv["dir"])}
+    result = {"size": util.get_dir_size(srv["dir"])}
+    st = runstate.read_state(srv["id"])
+    if st:
+        pid = st.get("javaPid")
+        if pid:
+            try:
+                with open(f"/proc/{pid}/status", "r") as f:
+                    for line in f:
+                        if line.startswith("VmRSS:"):
+                            kb = int(line.split()[1])
+                            result["ramBytes"] = kb * 1024
+                            break
+            except (OSError, ValueError):
+                pass
+    return result
 
 
 def get_server_file_tree(args, progress=None):

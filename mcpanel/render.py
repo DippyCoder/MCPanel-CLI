@@ -335,6 +335,7 @@ RENDERERS = {
     "system": render_system,
     "app-version": render_app_version,
     "check-update": render_check_update,
+    "debug-first-start": render_success,
 }
 
 
