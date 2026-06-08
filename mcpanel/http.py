@@ -4,12 +4,26 @@ functions in main.js. No third-party dependencies."""
 import json
 import urllib.request
 
-USER_AGENT = "MCPanel/1.0"
+USER_AGENT = "MCPanel/2.1 (https://github.com/DippyCoder/MCPanel; planewriter255@gmail.com)"
 
 
 def _open(url):
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     return urllib.request.urlopen(req, timeout=30)
+
+
+def post_json(url, payload):
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"User-Agent": USER_AGENT, "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as res:
+        data = res.read().decode("utf-8", "replace")
+    try:
+        return json.loads(data)
+    except Exception:
+        raise RuntimeError("Parse error: " + data[:100])
 
 
 def fetch_json(url):

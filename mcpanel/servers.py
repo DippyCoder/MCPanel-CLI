@@ -50,6 +50,21 @@ def _write_port(props_file, port):
         f.write(props)
 
 
+def _write_velocity_port(toml_file, port):
+    """Update bind = "host:port" in velocity.toml for the given port."""
+    content = ""
+    if os.path.exists(toml_file):
+        with open(toml_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    new_bind = f'bind = "0.0.0.0:{port}"'
+    if re.search(r'^bind\s*=\s*"[^"]*"', content, re.M):
+        content = re.sub(r'^bind\s*=\s*"[^"]*"', new_bind, content, count=1, flags=re.M)
+    else:
+        content = new_bind + "\n" + content if content else new_bind + "\n"
+    with open(toml_file, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
 # ─── listing / fetching ─────────────────────────────────────────────────────
 def get_config(args, progress=None):
     return load_config()
@@ -109,12 +124,15 @@ def create_server(args, progress=None):
             if os.path.exists(profile_dir):
                 util.copy_dir(profile_dir, server_dir)
 
-        props_file = os.path.join(server_dir, "server.properties")
-        if not os.path.exists(props_file):
-            with open(props_file, "w", encoding="utf-8") as f:
-                f.write(f"server-port={server['port']}\nquery.port={server['port']}\n")
+        if software == "velocity":
+            _write_velocity_port(os.path.join(server_dir, "velocity.toml"), server["port"])
         else:
-            _write_port(props_file, server["port"])
+            props_file = os.path.join(server_dir, "server.properties")
+            if not os.path.exists(props_file):
+                with open(props_file, "w", encoding="utf-8") as f:
+                    f.write(f"server-port={server['port']}\nquery.port={server['port']}\n")
+            else:
+                _write_port(props_file, server["port"])
 
         if getattr(args, "accept_eula", False):
             with open(os.path.join(server_dir, "eula.txt"), "w", encoding="utf-8") as f:
@@ -181,7 +199,11 @@ def update_server(args, progress=None):
         cfg["servers"][idx] = {**cfg["servers"][idx], **updates}
 
         if "port" in updates:
-            _write_port(os.path.join(cfg["servers"][idx]["dir"], "server.properties"), updates["port"])
+            srv_software = cfg["servers"][idx].get("software", "")
+            if srv_software == "velocity":
+                _write_velocity_port(os.path.join(cfg["servers"][idx]["dir"], "velocity.toml"), updates["port"])
+            else:
+                _write_port(os.path.join(cfg["servers"][idx]["dir"], "server.properties"), updates["port"])
 
         save_config(cfg)
         return {"success": True, "server": cfg["servers"][idx]}

@@ -4,7 +4,21 @@ main.js."""
 
 import re
 
-from .http import fetch_json
+from .http import fetch_json, post_json
+
+_FILL_GQL = "https://fill.papermc.io/graphql"
+_GQL_VERSIONS = '{{ project(key: "{project}") {{ versions(last: 100) {{ nodes {{ key support {{ status }} }} }} }} }}'
+
+def _papermc_versions(project, unstable=False):
+    """Fetch versions from fill.papermc.io GraphQL. Returns newest-first list."""
+    query = _GQL_VERSIONS.format(project=project)
+    data = post_json(_FILL_GQL, {"query": query})
+    nodes = data["data"]["project"]["versions"]["nodes"]
+    if unstable:
+        vs = [n["key"] for n in nodes]
+    else:
+        vs = [n["key"] for n in nodes if not _PRE_RE.search(n["key"])]
+    return list(reversed(vs))
 
 SOFTWARE = ["paper", "purpur", "velocity", "fabric", "vanilla", "leaf", "folia", "spigot"]
 
@@ -13,9 +27,7 @@ _PRE_RE = re.compile(r"-(pre|rc|alpha|beta|snapshot)\d*", re.I)
 
 # ─── Version listers ────────────────────────────────────────────────────────
 def fetch_paper_versions(unstable=False):
-    data = fetch_json("https://api.papermc.io/v2/projects/paper")
-    vs = data["versions"] if unstable else [v for v in data["versions"] if not _PRE_RE.search(v)]
-    return list(reversed(vs))
+    return _papermc_versions("paper", unstable)
 
 
 def fetch_purpur_versions(unstable=False):
@@ -24,9 +36,8 @@ def fetch_purpur_versions(unstable=False):
 
 
 def fetch_velocity_versions(unstable=False):
-    data = fetch_json("https://api.papermc.io/v2/projects/velocity")
-    vs = data["versions"] if unstable else [v for v in data["versions"] if "SNAPSHOT" not in v]
-    return list(reversed(vs))
+    # Velocity uses SNAPSHOTs as normal releases; always return all SUPPORTED versions.
+    return _papermc_versions("velocity", unstable=True)
 
 
 def fetch_fabric_versions(pre_release=False):
@@ -73,9 +84,7 @@ def fetch_spigot_versions(unstable=False):
 
 
 def fetch_folia_versions(unstable=False):
-    data = fetch_json("https://api.papermc.io/v2/projects/folia")
-    vs = data["versions"] if unstable else [v for v in data["versions"] if not _PRE_RE.search(v)]
-    return list(reversed(vs))
+    return _papermc_versions("folia", unstable)
 
 
 def fetch_versions(software, pre_release=False, unstable=False):
@@ -99,13 +108,15 @@ def fetch_versions(software, pre_release=False, unstable=False):
 
 
 # ─── Download URL resolution ─────────────────────────────────────────────────
+_GQL_DOWNLOAD = '{{ project(key: "{project}") {{ version(key: "{version}") {{ builds(last: 1) {{ nodes {{ downloads {{ url }} }} }} }} }} }}'
+
 def _papermc_url(project, version, unstable):
-    data = fetch_json(f"https://api.papermc.io/v2/projects/{project}/versions/{version}/builds")
-    stable = [b for b in data["builds"] if b["channel"] == "STABLE"]
-    pool = stable if (not unstable and stable) else data["builds"]
-    latest = pool[-1]
-    name = latest["downloads"]["application"]["name"]
-    return f"https://api.papermc.io/v2/projects/{project}/versions/{version}/builds/{latest['build']}/downloads/{name}"
+    query = _GQL_DOWNLOAD.format(project=project, version=version)
+    data = post_json(_FILL_GQL, {"query": query})
+    nodes = data["data"]["project"]["version"]["builds"]["nodes"]
+    if not nodes:
+        raise RuntimeError(f"No builds found for {project} {version}")
+    return nodes[-1]["downloads"][0]["url"]
 
 
 def resolve_download_url(software, version, unstable=False):

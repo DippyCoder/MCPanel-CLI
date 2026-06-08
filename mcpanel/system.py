@@ -55,12 +55,14 @@ def get_system_info():
     except (ValueError, OSError):
         pass
     available_storage = None
+    total_storage = None
     try:
         st = os.statvfs(paths.SERVERS_DIR if os.path.isdir(paths.SERVERS_DIR) else paths.USER_DATA)
         available_storage = st.f_bavail * st.f_frsize
+        total_storage = st.f_blocks * st.f_frsize
     except Exception:
         pass
-    return {"totalRam": total_ram, "availableStorage": available_storage}
+    return {"totalRam": total_ram, "availableStorage": available_storage, "totalStorage": total_storage}
 
 
 def get_version():
