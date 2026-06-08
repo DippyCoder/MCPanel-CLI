@@ -14,7 +14,7 @@ import json
 import sys
 import time
 
-from . import paths, servers, profiles, themes, system, versions, runstate, render
+from . import paths, servers, profiles, system, versions, runstate, render
 from . import __version__
 
 
@@ -49,13 +49,6 @@ def _config_path(args=None, progress=None):
         "run": paths.RUN_DIR,
     }
 
-
-def _install_theme(args, progress=None):
-    if getattr(args, "url", None):
-        return themes.install_theme_url(args, progress)
-    if getattr(args, "file", None):
-        return themes.install_theme_file(args, progress)
-    return {"error": "Provide -url <zip-url> or -file <zip-path>"}
 
 
 def _cli_tui(args=None, progress=None):
@@ -131,11 +124,10 @@ def add_commands(sub):
     p.add_argument("-versions", "--versions", dest="versions", default=None)
 
     # list ---------------------------------------------------------------
-    lst = sub.add_parser("list", help="list servers / profiles / themes", aliases=["ls"])
-    lsub = lst.add_subparsers(dest="noun", metavar="<servers|profiles|themes>", required=True)
+    lst = sub.add_parser("list", help="list servers / profiles", aliases=["ls"])
+    lsub = lst.add_subparsers(dest="noun", metavar="<servers|profiles>", required=True)
     leaf(lsub, "servers", servers.list_servers, "list-servers")
     leaf(lsub, "profiles", profiles.list_profiles, "list-profiles")
-    leaf(lsub, "themes", themes.list_themes, "list-themes")
 
     # info ---------------------------------------------------------------
     info = sub.add_parser("info", help="show details of a server / profile")
@@ -156,19 +148,15 @@ def add_commands(sub):
     leaf(fsub, "system", _system_info, "system")
     leaf(fsub, "update", _check_update, "check-update")
     leaf(fsub, "jdk", _detect_jdk, "jdk")
-    leaf(fsub, "themes", themes.list_themes, "list-themes")
     p = leaf(fsub, "versions", _versions, "versions")
     p.add_argument("-sw", "--software", dest="software", required=True)
     p.add_argument("--unstable", dest="unstable", action="store_true")
     p.add_argument("--prerelease", dest="prerelease", action="store_true")
-    p = leaf(fsub, "css", themes.get_theme_css, "theme-css"); f_id(p)
-
     # delete -------------------------------------------------------------
-    delete = sub.add_parser("delete", help="delete a server / profile / theme", aliases=["rm"])
-    dsub = delete.add_subparsers(dest="noun", metavar="<server|profile|theme>", required=True)
+    delete = sub.add_parser("delete", help="delete a server / profile", aliases=["rm"])
+    dsub = delete.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
     p = leaf(dsub, "server", servers.delete_server, "delete-server"); f_id(p)
     p = leaf(dsub, "profile", profiles.delete_profile, "delete-profile"); f_id(p)
-    p = leaf(dsub, "theme", themes.delete_theme, "delete-theme"); f_id(p)
 
     # update -------------------------------------------------------------
     p = sub.add_parser("update", help="update server settings")
@@ -271,22 +259,6 @@ def add_commands(sub):
     osub = op.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
     p = leaf(osub, "server", servers.open_server_folder, "open-server"); f_id(p)
     p = leaf(osub, "profile", profiles.open_profile_folder, "open-profile"); f_id(p)
-
-    # themes -------------------------------------------------------------
-    inst = sub.add_parser("install", help="install a theme from a zip url/file")
-    instsub = inst.add_subparsers(dest="noun", metavar="<theme>", required=True)
-    p = leaf(instsub, "theme", _install_theme, "install-theme", progress_ok=True)
-    p.add_argument("-url", "--url", dest="url", default=None)
-    p.add_argument("-file", "--file", dest="file", default=None)
-
-    ap = sub.add_parser("apply", help="set the active theme")
-    apsub = ap.add_subparsers(dest="noun", metavar="<theme>", required=True)
-    p = leaf(apsub, "theme", themes.set_active_theme, "apply-theme")
-    p.add_argument("-id", "--id", dest="id", required=True, help="theme id, or 'none' to reset")
-
-    br = sub.add_parser("browse", help="browse community themes online")
-    brsub = br.add_subparsers(dest="noun", metavar="<themes>", required=True)
-    leaf(brsub, "themes", themes.fetch_github_themes, "github-themes")
 
     # versions (top-level convenience) -----------------------------------
     p = sub.add_parser("versions", help="list available versions for a software")
