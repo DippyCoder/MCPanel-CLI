@@ -1,7 +1,7 @@
 #!/bin/bash
 # MCPanel CLI installer.
 #
-#   ./install.sh            → symlink bin/mcpanel into ~/.local/bin (no build)
+#   ./install.sh            → symlink bin/mcpanel into ~/.local/bin + install deps
 #   ./install.sh --pip      → pip install --user (proper console-script entry)
 #   ./install.sh --uninstall
 set -e
@@ -21,7 +21,7 @@ fi
 
 if [ "$1" = "--uninstall" ]; then
     rm -f "${BIN_DIR}/mcpanel"
-    pip uninstall -y mcpanel-cli 2>/dev/null || true
+    python3 -m pip uninstall -y mcpanel-cli 2>/dev/null || true
     echo "[done] Removed mcpanel from ${BIN_DIR} and pip."
     exit 0
 fi
@@ -35,12 +35,15 @@ if [ "$1" = "--pip" ]; then
     exit 0
 fi
 
-echo "[1/2] Linking launcher into ${BIN_DIR}..."
+echo "[1/3] Installing dependencies..."
+python3 -m pip install --user --upgrade "prompt_toolkit>=3.0"
+
+echo "[2/3] Linking launcher into ${BIN_DIR}..."
 mkdir -p "${BIN_DIR}"
 chmod +x "${REPO}/bin/mcpanel"
 ln -sf "${REPO}/bin/mcpanel" "${BIN_DIR}/mcpanel"
 
-echo "[2/2] Done."
+echo "[3/3] Done."
 echo ""
 case ":${PATH}:" in
     *":${BIN_DIR}:"*) echo "  ${BIN_DIR} is on your PATH — run:  mcpanel --help" ;;

@@ -21,6 +21,8 @@ from . import paths, runstate
 from .config import load_config, find_server
 from .util import resolve_jar, build_java_command
 
+_USE_UNIX_SOCKET = runstate._USE_UNIX_SOCKET
+
 
 def _now_ms():
     return int(time.time() * 1000)
@@ -134,13 +136,20 @@ class Supervisor:
         self.started = _now_ms()
 
         # Control socket
-        sp = runstate.sock_path(self.id)
-        try:
-            os.remove(sp)
-        except OSError:
-            pass
-        self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self.sock.bind(sp)
+        if _USE_UNIX_SOCKET:
+            sp = runstate.sock_path(self.id)
+            try:
+                os.remove(sp)
+            except OSError:
+                pass
+            self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self.sock.bind(sp)
+        else:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.bind(("127.0.0.1", 0))
+            port = self.sock.getsockname()[1]
+            with open(runstate.port_path(self.id), "w", encoding="utf-8") as pf:
+                pf.write(str(port))
         self.sock.listen(8)
 
         # State file (signals "running" to the rest of the CLI)

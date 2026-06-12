@@ -51,6 +51,27 @@ def _config_path(args=None, progress=None):
 
 
 
+def _shutdown(args=None, progress=None):
+    cfg = runstate  # just to trigger import; use load from servers
+    from .config import load_config
+    import time
+    config = load_config()
+    running = [s for s in config.get("servers", []) if runstate.is_running(s["id"])]
+    if not running:
+        return {"success": True, "stopped": []}
+    stopped, failed = [], []
+    for srv in running:
+        r = runstate.send_request(srv["id"], {"op": "kill"})
+        if r.get("ok"):
+            stopped.append(srv["id"])
+        else:
+            failed.append({"id": srv["id"], "error": r.get("error")})
+    time.sleep(0.8)
+    for srv in running:
+        runstate.cleanup_state(srv["id"])
+    return {"success": True, "stopped": stopped, "failed": failed}
+
+
 def _cli_tui(args=None, progress=None):
     from . import tui
     tui.run()
@@ -281,6 +302,10 @@ def add_commands(sub):
     cfgsub = cfgp.add_subparsers(dest="noun", metavar="<show|path>", required=True)
     leaf(cfgsub, "show", servers.get_config, "config")
     leaf(cfgsub, "path", _config_path, "config")
+
+    # shutdown -----------------------------------------------------------
+    p = sub.add_parser("shutdown", help="kill all running servers and stop MCPanel")
+    p.set_defaults(func=_shutdown, action="shutdown")
 
     # debug --------------------------------------------------------------
     dbg = sub.add_parser("debug", help="debugging utilities for MCPanel development")

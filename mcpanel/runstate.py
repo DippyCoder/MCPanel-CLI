@@ -13,9 +13,13 @@ disk under run/:
 import json
 import os
 import socket
+import sys
 import time
 
 from . import paths
+
+# Unix-domain sockets are used on POSIX; TCP loopback on Windows.
+_USE_UNIX_SOCKET = sys.platform != "win32" and hasattr(socket, "AF_UNIX")
 
 
 def state_path(server_id):
@@ -24,6 +28,11 @@ def state_path(server_id):
 
 def sock_path(server_id):
     return os.path.join(paths.RUN_DIR, server_id + ".sock")
+
+
+def port_path(server_id):
+    """Path to the TCP control port file (Windows only)."""
+    return os.path.join(paths.RUN_DIR, server_id + ".port")
 
 
 def log_path(server_id):
@@ -38,6 +47,17 @@ def _pid_alive(pid):
     if not pid:
         return False
     try:
+        if sys.platform == "win32":
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return False
+            code = ctypes.c_ulong(0)
+            ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return code.value == STILL_ACTIVE
         os.kill(int(pid), 0)
         return True
     except (OSError, ValueError):
@@ -64,7 +84,7 @@ def is_running(server_id):
 
 
 def cleanup_state(server_id):
-    for p in (state_path(server_id), sock_path(server_id)):
+    for p in (state_path(server_id), sock_path(server_id), port_path(server_id)):
         try:
             os.remove(p)
         except OSError:
@@ -73,13 +93,22 @@ def cleanup_state(server_id):
 
 def send_request(server_id, obj, timeout=5.0):
     """Send a single JSON request to the supervisor and return its JSON reply."""
-    sp = sock_path(server_id)
-    if not os.path.exists(sp):
-        return {"ok": False, "error": "Not running"}
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        if _USE_UNIX_SOCKET:
+            sp = sock_path(server_id)
+            if not os.path.exists(sp):
+                return {"ok": False, "error": "Not running"}
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            addr = sp
+        else:
+            pp = port_path(server_id)
+            if not os.path.exists(pp):
+                return {"ok": False, "error": "Not running"}
+            with open(pp, "r", encoding="utf-8") as f:
+                addr = ("127.0.0.1", int(f.read().strip()))
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        s.connect(sp)
+        s.connect(addr)
         s.sendall((json.dumps(obj) + "\n").encode("utf-8"))
         data = b""
         while b"\n" not in data:
