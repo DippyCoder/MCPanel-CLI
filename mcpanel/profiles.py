@@ -88,10 +88,16 @@ def delete_profile(args, progress=None):
 
 
 def open_profile_folder(args, progress=None):
+    import sys
     profile_dir = os.path.join(paths.PROFILES_DIR, args.id)
     os.makedirs(profile_dir, exist_ok=True)
     try:
-        subprocess.Popen(["xdg-open", profile_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", profile_dir])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", profile_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", profile_dir], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
     return {"success": True, "dir": profile_dir}

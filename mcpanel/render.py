@@ -9,6 +9,17 @@ from . import util
 import sys
 _TTY = sys.stdout.isatty()
 
+if sys.platform == "win32" and _TTY:
+    try:
+        import ctypes
+        _k32 = ctypes.windll.kernel32
+        _mode = ctypes.c_ulong(0)
+        _handle = _k32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        if _k32.GetConsoleMode(_handle, ctypes.byref(_mode)):
+            _k32.SetConsoleMode(_handle, _mode.value | 0x0004)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+    except Exception:
+        pass
+
 
 def _c(code, text):
     return f"\033[{code}m{text}\033[0m" if _TTY else str(text)
@@ -290,6 +301,21 @@ def render_config(result, args):
     print(json.dumps(result, indent=2, default=str))
 
 
+def render_shutdown(result, args):
+    if _err(result):
+        return
+    stopped = result.get("stopped", [])
+    failed  = result.get("failed", [])
+    if not stopped and not failed:
+        print(dim("No servers were running."))
+        return
+    for sid in stopped:
+        print(green("✓ ") + f"stopped  {sid}")
+    for f in failed:
+        print(yellow("⚠ ") + f"could not stop {f['id']}: {f.get('error','')}")
+    print(dim(f"Shutdown complete — {len(stopped)} server{'s' if len(stopped) != 1 else ''} stopped."))
+
+
 # ─── dispatch table ──────────────────────────────────────────────────────────
 RENDERERS = {
     "list-servers": render_list_servers,
@@ -336,6 +362,7 @@ RENDERERS = {
     "app-version": render_app_version,
     "check-update": render_check_update,
     "debug-first-start": render_success,
+    "shutdown": render_shutdown,
 }
 
 

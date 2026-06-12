@@ -2,11 +2,12 @@
 
 Shares the *same* directory the MCPanel desktop app uses, so servers, profiles
 and themes are interchangeable between the CLI and the Electron app. Electron's
-``app.getPath('userData')`` on Linux resolves to ``$XDG_CONFIG_HOME/<name>``
-(falling back to ``~/.config/<name>``), where ``<name>`` is the package name
-``mcpanel``:
+``app.getPath('userData')`` resolves to:
+  - Windows: ``%APPDATA%\mcpanel``
+  - Linux:   ``$XDG_CONFIG_HOME/mcpanel`` (falling back to ``~/.config/mcpanel``)
+  - macOS:   ``~/Library/Application Support/mcpanel``
 
-    ~/.config/mcpanel/
+    <userData>/
     ├── config.json          ← servers list + jdkPaths + activeTheme (shared)
     ├── servers/<id>/         ← each server's working directory (shared)
     ├── profiles/<id>/        ← server presets (shared)
@@ -18,6 +19,7 @@ Override the root with the MCPANEL_HOME environment variable.
 """
 
 import os
+import sys
 
 # Must match the MCPanel Electron app's name (package.json "name") so both
 # read/write the same userData directory.
@@ -28,10 +30,15 @@ def _default_home():
     override = os.environ.get("MCPANEL_HOME")
     if override:
         return os.path.abspath(os.path.expanduser(override))
+    if sys.platform == "win32":
+        # Electron on Windows: appData = %APPDATA%, then productName
+        appdata = os.environ.get("APPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+        return os.path.join(appdata, APP_NAME)
+    if sys.platform == "darwin":
+        # Electron on macOS: ~/Library/Application Support/<name>
+        return os.path.join(os.path.expanduser("~"), "Library", "Application Support", APP_NAME)
     # Electron on Linux: appData = $XDG_CONFIG_HOME or ~/.config, then productName
-    appdata = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
-        os.path.expanduser("~"), ".config"
-    )
+    appdata = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(appdata, APP_NAME)
 
 

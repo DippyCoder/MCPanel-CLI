@@ -298,12 +298,17 @@ def _spawn_supervisor(server_id, timeout=8.0):
         pass
     env = os.environ.copy()
     pp = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = _PKG_PARENT + (":" + pp if pp else "")
+    env["PYTHONPATH"] = _PKG_PARENT + (os.pathsep + pp if pp else "")
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        kwargs["start_new_session"] = True
     subprocess.Popen(
         [sys.executable, "-m", "mcpanel.supervisor", server_id],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True,
         env=env,
+        **kwargs,
     )
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -456,15 +461,41 @@ def get_server_dir_stats(args, progress=None):
     if st:
         pid = st.get("javaPid")
         if pid:
-            try:
-                with open(f"/proc/{pid}/status", "r") as f:
-                    for line in f:
-                        if line.startswith("VmRSS:"):
-                            kb = int(line.split()[1])
-                            result["ramBytes"] = kb * 1024
-                            break
-            except (OSError, ValueError):
-                pass
+            if sys.platform == "win32":
+                try:
+                    import ctypes
+                    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+                    if handle:
+                        class _PROCESS_MEMORY_COUNTERS(ctypes.Structure):
+                            _fields_ = [
+                                ("cb", ctypes.c_ulong),
+                                ("PageFaultCount", ctypes.c_ulong),
+                                ("PeakWorkingSetSize", ctypes.c_size_t),
+                                ("WorkingSetSize", ctypes.c_size_t),
+                                ("QuotaPeakPagedPoolUsage", ctypes.c_size_t),
+                                ("QuotaPagedPoolUsage", ctypes.c_size_t),
+                                ("QuotaPeakNonPagedPoolUsage", ctypes.c_size_t),
+                                ("QuotaNonPagedPoolUsage", ctypes.c_size_t),
+                                ("PagefileUsage", ctypes.c_size_t),
+                                ("PeakPagefileUsage", ctypes.c_size_t),
+                            ]
+                        pmc = _PROCESS_MEMORY_COUNTERS()
+                        pmc.cb = ctypes.sizeof(pmc)
+                        ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(pmc), pmc.cb)
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                        result["ramBytes"] = pmc.WorkingSetSize
+                except Exception:
+                    pass
+            else:
+                try:
+                    with open(f"/proc/{pid}/status", "r") as f:
+                        for line in f:
+                            if line.startswith("VmRSS:"):
+                                result["ramBytes"] = int(line.split()[1]) * 1024
+                                break
+                except (OSError, ValueError):
+                    pass
     return result
 
 
@@ -507,7 +538,12 @@ def open_server_folder(args, progress=None):
     if not srv:
         return {"error": "Server not found"}
     try:
-        subprocess.Popen(["xdg-open", srv["dir"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", srv["dir"]])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", srv["dir"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            subprocess.Popen(["xdg-open", srv["dir"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except Exception:
         pass
     return {"success": True, "dir": srv["dir"]}
