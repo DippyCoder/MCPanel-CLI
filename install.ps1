@@ -28,16 +28,20 @@ python -m pip install --user --upgrade $Repo
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host ""
-Write-Host "[2/2] Done. Run 'mcpanel --help' to get started."
-Write-Host ""
 
-# Check that the Scripts folder is on PATH
+# Ensure the Python user Scripts folder is on PATH
 $scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts', 'nt_user'))" 2>$null
-if ($scripts -and ($env:PATH -notlike "*$scripts*")) {
-    Write-Host "  NOTE: Add Python's user Scripts folder to your PATH:" -ForegroundColor Yellow
-    Write-Host "    $scripts" -ForegroundColor Yellow
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+if ($scripts -and ($userPath -notlike "*$scripts*")) {
+    Write-Host "[2/2] Adding Python Scripts folder to your PATH..."
+    $newPath = if ($userPath) { "$userPath;$scripts" } else { $scripts }
+    [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
+    # Also update the current session so 'mcpanel' works immediately
+    $env:PATH = "$env:PATH;$scripts"
+    Write-Host "      $scripts" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  To add it permanently, run this in PowerShell (as yourself, not admin):"
-    Write-Host '    [Environment]::SetEnvironmentVariable("PATH", $env:PATH + ";' + $scripts + '", "User")'
-    Write-Host ""
+    Write-Host "[done] PATH updated. Run 'mcpanel --help' to get started." -ForegroundColor Green
+} else {
+    Write-Host "[2/2] Done. Run 'mcpanel --help' to get started." -ForegroundColor Green
 }
+Write-Host ""
