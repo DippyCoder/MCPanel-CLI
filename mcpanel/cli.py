@@ -267,6 +267,20 @@ def add_commands(sub):
     p.add_argument("-sw", "--software", dest="software", default=None)
     p.add_argument("-versions", "--versions", dest="versions", default=None)
 
+    # proxy --------------------------------------------------------------
+    proxy = sub.add_parser("proxy", help="Velocity proxy link utilities")
+    proxysub = proxy.add_subparsers(dest="noun", metavar="<info|link>", required=True)
+    p = leaf(proxysub, "info", servers.proxy_info, "proxy-info",
+             help="list servers registered in a Velocity proxy config")
+    p.add_argument("--velocity-id", dest="velocity_id", required=True, metavar="<id>")
+    p = leaf(proxysub, "link", servers.link_to_proxy, "proxy-link",
+             help="link a Paper-based server to a Velocity proxy")
+    f_id(p)
+    p.add_argument("--velocity-id", dest="velocity_id", required=True, metavar="<id>")
+    p.add_argument("--server-name", dest="server_name", default=None, metavar="<name>")
+    p.add_argument("--priority", dest="priority", type=int, default=None, metavar="<pos>")
+    p.add_argument("--custom-ip", dest="custom_ip", default=None, metavar="<ip:port>")
+
     # scan ---------------------------------------------------------------
     scan = sub.add_parser("scan", help="inspect a folder before importing")
     ssub = scan.add_subparsers(dest="noun", metavar="<server|profile>", required=True)

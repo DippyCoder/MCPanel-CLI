@@ -929,8 +929,9 @@ def _help():
 
 {C("  Profiles")}
   /create profile          /list profiles
-  /delete profile          /open profile
+  /info profile            /delete profile
   /import profile          /scan profile
+  /open profile
 
 {C("  Versions & system")}
   /versions -sw <software>   list available versions

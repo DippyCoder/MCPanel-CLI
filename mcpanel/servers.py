@@ -532,6 +532,207 @@ def scan_server_folder(args, progress=None):
         return {"port": 25565}
 
 
+PAPER_SOFTWARES = {"paper", "purpur", "folia", "leaf", "spigot"}
+
+
+def _extract_velocity_secret_from_dir(velocity_dir):
+    toml_file = os.path.join(velocity_dir, "velocity.toml")
+    if not os.path.exists(toml_file):
+        return None
+    with open(toml_file, "r", encoding="utf-8") as f:
+        content = f.read()
+    for line in content.splitlines():
+        t = line.strip()
+        if t.startswith("forwarding-secret-file") and "=" in t:
+            m = re.search(r'"([^"]+)"', t)
+            if m:
+                fpath = os.path.join(velocity_dir, m.group(1))
+                if os.path.exists(fpath):
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        s = f.read().strip()
+                    if s:
+                        return s
+    for line in content.splitlines():
+        t = line.strip()
+        if (t.startswith("forwarding-secret")
+                and not t.startswith("forwarding-secret-file")
+                and "=" in t):
+            m = re.search(r'"([^"]+)"', t)
+            if m and m.group(1):
+                return m.group(1)
+    fpath = os.path.join(velocity_dir, "forwarding.secret")
+    if os.path.exists(fpath):
+        with open(fpath, "r", encoding="utf-8") as f:
+            s = f.read().strip()
+        if s:
+            return s
+    return None
+
+
+def _parse_velocity_try_list(content):
+    m = re.search(r'^try\s*=\s*\[([^\]]*)\]', content, re.M)
+    if not m:
+        return []
+    return re.findall(r'"([^"]+)"', m.group(1))
+
+
+def _add_server_to_velocity_toml(content, server_name, server_address, priority):
+    # Remove stale entry for this name
+    content = re.sub(
+        r'^' + re.escape(server_name) + r'\s*=\s*"[^"]*"\n?',
+        '', content, flags=re.M
+    )
+    entry_line = f'{server_name} = "{server_address}"'
+    if re.search(r'^\[servers\]', content, re.M):
+        content = re.sub(
+            r'(^\[servers\]\n)',
+            r'\g<1>' + entry_line + '\n',
+            content, count=1, flags=re.M
+        )
+    else:
+        content = f"[servers]\n{entry_line}\n\n" + content
+    m = re.search(r'^try\s*=\s*\[([^\]]*)\]', content, re.M)
+    if m:
+        items = [i for i in re.findall(r'"([^"]+)"', m.group(1)) if i != server_name]
+        priority = max(0, min(priority, len(items)))
+        items.insert(priority, server_name)
+        new_try = "try = [" + ", ".join(f'"{i}"' for i in items) + "]"
+        content = content[:m.start()] + new_try + content[m.end():]
+    else:
+        content += f'\ntry = ["{server_name}"]\n'
+    return content
+
+
+def _set_server_property(props_file, key, value):
+    content = ""
+    if os.path.exists(props_file):
+        with open(props_file, "r", encoding="utf-8") as f:
+            content = f.read()
+    pattern = rf'^{re.escape(key)}=.*'
+    line = f"{key}={value}"
+    if re.search(pattern, content, re.M):
+        content = re.sub(pattern, line, content, flags=re.M)
+    else:
+        content = content.rstrip("\n") + "\n" + line + "\n"
+    with open(props_file, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _configure_paper_velocity(paper_dir, secret):
+    config_dir = os.path.join(paper_dir, "config")
+    os.makedirs(config_dir, exist_ok=True)
+    yml_path = os.path.join(config_dir, "paper-global.yml")
+
+    velocity_block = (
+        "  velocity:\n"
+        "    enabled: true\n"
+        "    online-mode: true\n"
+        f"    secret: '{secret}'\n"
+    )
+
+    if not os.path.exists(yml_path):
+        with open(yml_path, "w", encoding="utf-8") as f:
+            f.write("proxies:\n" + velocity_block)
+        return
+
+    with open(yml_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    if re.search(r'^\s*velocity:', content, re.M):
+        content = re.sub(r'^(\s+enabled:\s*).*$', r'\g<1>true', content, count=1, flags=re.M)
+        content = re.sub(r'^(\s+online-mode:\s*).*$', r'\g<1>true', content, count=1, flags=re.M)
+        content = re.sub(
+            r"^(\s+secret:\s*).*$",
+            r"\g<1>'" + secret + "'",
+            content, count=1, flags=re.M
+        )
+    elif re.search(r'^proxies:', content, re.M):
+        content = re.sub(r'^(proxies:\n)', r'\g<1>' + velocity_block, content, count=1, flags=re.M)
+    else:
+        content += "\nproxies:\n" + velocity_block
+
+    with open(yml_path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def proxy_info(args, progress=None):
+    try:
+        cfg = load_config()
+        vel = find_server(cfg, args.velocity_id)
+        if not vel:
+            return {"error": "Velocity server not found"}
+        if vel.get("software") != "velocity":
+            return {"error": "Not a Velocity server"}
+        toml_file = os.path.join(vel["dir"], "velocity.toml")
+        if not os.path.exists(toml_file):
+            return {"servers": {}, "tryList": []}
+        with open(toml_file, "r", encoding="utf-8") as f:
+            content = f.read()
+        servers_map = {}
+        in_servers = False
+        for line in content.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("["):
+                in_servers = (stripped == "[servers]")
+                continue
+            if in_servers:
+                m = re.match(r'^([\w-]+)\s*=\s*"([^"]+)"', stripped)
+                if m:
+                    servers_map[m.group(1)] = m.group(2)
+        return {"servers": servers_map, "tryList": _parse_velocity_try_list(content)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def link_to_proxy(args, progress=None):
+    try:
+        cfg = load_config()
+        paper_srv = find_server(cfg, args.id)
+        if not paper_srv:
+            return {"error": "Server not found"}
+        if paper_srv.get("software") not in PAPER_SOFTWARES:
+            return {"error": f"'{paper_srv.get('software')}' is not a Paper-based server"}
+        vel_srv = find_server(cfg, args.velocity_id)
+        if not vel_srv:
+            return {"error": "Velocity server not found"}
+        if vel_srv.get("software") != "velocity":
+            return {"error": "Target is not a Velocity server"}
+        toml_file = os.path.join(vel_srv["dir"], "velocity.toml")
+        if not os.path.exists(toml_file):
+            return {"error": "velocity.toml not found — start Velocity once to generate it"}
+        secret = _extract_velocity_secret_from_dir(vel_srv["dir"])
+        if not secret:
+            return {"error": "Could not read forwarding secret from velocity.toml"}
+        server_name = args.server_name
+        if not server_name:
+            server_name = (
+                re.sub(r'[^a-z0-9_-]', '-', paper_srv["name"].lower()).strip('-') or "server"
+            )
+        server_address = args.custom_ip if args.custom_ip else f"127.0.0.1:{paper_srv['port']}"
+        priority = int(args.priority) if args.priority is not None else 999
+        with open(toml_file, "r", encoding="utf-8") as f:
+            vel_content = f.read()
+        vel_content = _add_server_to_velocity_toml(vel_content, server_name, server_address, priority)
+        with open(toml_file, "w", encoding="utf-8") as f:
+            f.write(vel_content)
+        _set_server_property(
+            os.path.join(paper_srv["dir"], "server.properties"),
+            "online-mode", "false"
+        )
+        _configure_paper_velocity(paper_srv["dir"], secret)
+        idx = next((i for i, s in enumerate(cfg.get("servers", [])) if s["id"] == args.id), -1)
+        if idx != -1:
+            cfg["servers"][idx]["velocityLink"] = {
+                "velocityId": args.velocity_id,
+                "serverName": server_name,
+                "customIp": args.custom_ip or None,
+            }
+            save_config(cfg)
+        return {"success": True, "serverName": server_name, "address": server_address}
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def open_server_folder(args, progress=None):
     cfg = load_config()
     srv = find_server(cfg, args.id)

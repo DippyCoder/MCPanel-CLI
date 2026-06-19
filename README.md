@@ -11,7 +11,7 @@
 
 </div>
 
-A 1:1 replica of [MCPanel](https://github.com/DippyCoder/MCPanel), but as a cross-platform CLI instead of Electron.
+A CLI featuring all [MCPanel](https://github.com/DippyCoder/MCPanel) features, but as a CLI.
 Runs on **Windows, macOS, and Linux** with no native dependencies beyond Python and Java.
 
 Three faces to the same engine:
@@ -24,7 +24,7 @@ Three faces to the same engine:
 
 ---
 
-## 🚀 Install
+## Install
 
 **Dependencies:** Python 3.8+ · [`prompt_toolkit`](https://pypi.org/project/prompt-toolkit/) (auto-installed) · Java (to run Minecraft servers)
 
@@ -65,7 +65,7 @@ Override with the `MCPANEL_HOME` environment variable.
 
 ---
 
-## 🖥️ Interactive TUI (`mcpanel cli`)
+## Interactive TUI (`mcpanel cli`)
 
 ```
 mcpanel › /create server
@@ -94,7 +94,7 @@ Type `/help` inside the TUI for the full command list.
 
 ---
 
-## ⚡ Quick start (command-line)
+## Quick start (command-line)
 
 ```bash
 # Create a Paper 1.21.1 server with 20 GB RAM and accept the EULA
@@ -121,7 +121,7 @@ mcpanel stop server -id srv_1700000000000
 
 ---
 
-## 📟 Command reference
+## Command reference
 
 ### Servers
 | Command | What it does |
@@ -144,13 +144,29 @@ mcpanel stop server -id srv_1700000000000
 | `scan server -path <folder>` | Detect port/software before importing |
 | `open server -id <id>` | Open folder in file manager |
 
+### Proxy (Velocity)
+| Command | What it does |
+|---------|--------------|
+| `proxy info --velocity-id <id>` | List servers registered in a Velocity proxy config |
+| `proxy link -id <id> --velocity-id <id> [--server-name <name>] [--priority <pos>] [--custom-ip <ip:port>]` | Link a Paper-based server into a Velocity proxy (writes `paper-global.yml` + `velocity.toml`) |
+
 ### Profiles (server presets)
-`create profile`, `list profiles`, `info profile`, `delete profile`,
-`import profile`, `create profile-from-server`, `scan profile`, `open profile`.
+| Command | What it does |
+|---------|--------------|
+| `create profile -t <name> [-desc <text>] [-sw <a,b>] [-versions <a,b>]` | Create a blank profile |
+| `create profile-from-server -id <id> -t <name> -paths <rel,paths> [-desc <text>] [-sw <sw>] [-versions <ver>]` | Snapshot files from a running server into a new profile |
+| `list profiles` | List all profiles |
+| `info profile -id <id>` | Show profile details |
+| `delete profile -id <id>` | Delete a profile |
+| `import profile -path <folder> -t <name> [-desc <text>] [-sw <sw>] [-versions <ver>]` | Import an existing profile folder |
+| `scan profile -path <folder>` | Read metadata from a profile folder |
+| `open profile -id <id>` | Open profile folder in file manager |
 
 ```bash
 mcpanel create profile -t "Survival" -desc "essentials" -sw paper,purpur
 # then drop plugins/, config/, server.properties into the printed folder
+
+mcpanel create profile-from-server -id srv_1700000000000 -t "my preset" -paths "plugins,config"
 ```
 
 ### Versions
@@ -193,7 +209,7 @@ Errors come back as `{"error": "..."}` with a non-zero exit code.
 
 ---
 
-## 🏗️ How running servers work
+## How running servers work
 
 A CLI invocation is short-lived, so each running server is owned by a detached
 **supervisor** process (`python -m mcpanel.supervisor <id>`). It launches Java,
@@ -204,7 +220,7 @@ Runtime state lives in the `run/` subfolder of the data directory.
 
 ---
 
-## 📂 Layout
+## Layout
 
 ```
 mcpanel/
@@ -218,18 +234,15 @@ mcpanel/
 ├── ping.py         ← Minecraft server-list-ping
 ├── system.py       ← JDK detection, system info, update check
 ├── render.py       ← human-readable output + ANSI helpers
-├── http.py · util.py · config.py · paths.py
-└── bundled_themes/ ← Dark Slate / Bright Slate
+└── http.py · util.py · config.py · paths.py
 ```
 
 ---
 
-## 🔧 Notes
+## Notes
 
 - **Spigot** needs [BuildTools](https://www.spigotmc.org/wiki/buildtools/) — the server folder is created but no JAR is downloaded.
 - **Fabric** downloads the server-side loader JAR from FabricMC.
 - Match your Java version to the Minecraft version (1.20.5+ needs Java 21).
 - The JSON shapes from `api` mirror the original Electron IPC return values 1:1.
 - The interactive TUI requires `prompt_toolkit` (installed automatically via pip). On terminals without ANSI support the TUI degrades gracefully to plain text.
-
-> THE PROJECT IS CURRENTLY IN EARLY-DEVELOPMENT! BUGS MAY OCCUR
