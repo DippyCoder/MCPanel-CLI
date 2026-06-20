@@ -36,11 +36,13 @@ if ($scripts -and ($userPath -notlike "*$scripts*")) {
     Write-Host "[2/2] Adding Python Scripts folder to your PATH..."
     $newPath = if ($userPath) { "$userPath;$scripts" } else { $scripts }
     [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
-    # Also update the current session so 'mcpanel' works immediately
     $env:PATH = "$env:PATH;$scripts"
     Write-Host "      $scripts" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "[done] PATH updated. Run 'mcpanel --help' to get started." -ForegroundColor Green
+    Write-Host "[done] PATH updated." -ForegroundColor Green
+    Write-Host ""
+    Write-Host "  Open a new terminal window, then run 'mcpanel --help' to get started." -ForegroundColor Yellow
+    Write-Host "  (PATH changes don't apply to the session that launched this installer.)" -ForegroundColor DarkGray
 } else {
     Write-Host "[2/2] Done. Run 'mcpanel --help' to get started." -ForegroundColor Green
 }
