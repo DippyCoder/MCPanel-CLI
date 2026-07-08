@@ -6,6 +6,8 @@ import os
 import re
 import shutil
 
+from .config import MANIFEST_FILENAME
+
 _DEFAULT_JAVA_ARGS = "-XX:+UseG1GC -XX:+ParallelRefProcEnabled -XX:MaxGCPauseMillis=200"
 
 
@@ -14,12 +16,14 @@ def default_java_args():
 
 
 def copy_dir(src, dest):
-    """Recursive copy that skips profile.json — matches copyDirSync."""
+    """Recursive copy that skips profile.json and mcpanel.json — matches
+    copyDirSync. The manifest is skipped so a duplicated/imported server gets
+    its own fresh one instead of inheriting the source's id."""
     if not os.path.exists(src):
         return
     os.makedirs(dest, exist_ok=True)
     for entry in os.scandir(src):
-        if entry.name == "profile.json":
+        if entry.name in ("profile.json", MANIFEST_FILENAME):
             continue
         sp = os.path.join(src, entry.name)
         dp = os.path.join(dest, entry.name)

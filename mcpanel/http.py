@@ -35,6 +35,19 @@ def fetch_json(url):
         raise RuntimeError("Parse error: " + data[:100])
 
 
+def fetch_json_with_headers(url):
+    """Like fetch_json, but also returns the response headers — needed for
+    APIs (Spiget) that report total result counts in a header rather than
+    the JSON body."""
+    with _open(url) as res:
+        data = res.read().decode("utf-8", "replace")
+        headers = res.headers
+    try:
+        return json.loads(data), headers
+    except Exception:
+        raise RuntimeError("Parse error: " + data[:100])
+
+
 def fetch_text(url):
     with _open(url) as res:
         return res.read().decode("utf-8", "replace")

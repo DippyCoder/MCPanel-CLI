@@ -17,6 +17,19 @@ def _java_exe():
     return "java.exe" if sys.platform == "win32" else "java"
 
 
+def _javac_exe():
+    return "javac.exe" if sys.platform == "win32" else "javac"
+
+
+def has_compiler(java_path):
+    """Whether `java_path` is part of a full JDK (has javac alongside it) as
+    opposed to a JRE-only install. Many distros (Fedora/Debian/Ubuntu) split
+    packages this way — e.g. Fedora's `java-21-openjdk` is JRE-only; the
+    compiler lives in the separate `java-21-openjdk-devel` package."""
+    real = os.path.realpath(java_path) if os.path.exists(java_path) else java_path
+    return os.path.isfile(os.path.join(os.path.dirname(real), _javac_exe()))
+
+
 def _windows_jdk_roots():
     """Return candidate JVM install root directories on Windows."""
     roots = []
@@ -76,8 +89,121 @@ def detect_jdk():
         if out.returncode == 0:
             seen.add(rp)
             m = re.search(r'version "([^"]+)"', (out.stderr or "") + (out.stdout or ""))
-            found.append({"path": p, "version": m.group(1) if m else "Unknown"})
+            found.append({
+                "path": p,
+                "version": m.group(1) if m else "Unknown",
+                "hasCompiler": has_compiler(p),
+            })
     return found
+
+
+def _feature_version(version_str):
+    """Parse a `java -version` string into a single feature-version int.
+    Handles both modern ("17.0.9", "25.0.3") and legacy ("1.8.0_392") forms."""
+    s = str(version_str or "")
+    m = re.match(r"^1\.(\d+)", s)  # legacy "1.8.0_392" style (Java 8 and older)
+    if m:
+        return int(m.group(1))
+    m = re.match(r"^(\d+)", s)
+    return int(m.group(1)) if m else None
+
+
+# The most broadly recommended/tested LTS release for compiling Spigot across
+# the range of MC versions still commonly built — preferred over other
+# in-range JDKs (including newer non-LTS ones) when both satisfy the
+# requirement, since those get far less real-world BuildTools mileage.
+_PREFERRED_JDK_MAJOR = 21
+
+
+def find_compatible_jdk(min_major, max_major=None, jdks=None, require_compiler=False,
+                         prefer=_PREFERRED_JDK_MAJOR):
+    """Fetch all detected JDKs and filter down to the ones actually usable
+    for this requirement — feature version within [min_major, max_major],
+    and (if `require_compiler`) not a JRE-only install. None if nothing
+    detected qualifies.
+
+    Among whatever survives that filter, `prefer` (default: JDK 21, the LTS
+    most BuildTools setups are built/tested against) is picked over other
+    in-range versions when present; otherwise falls back to the highest
+    in-range version. Pass `prefer=None` to always just take the highest."""
+    candidates = jdks if jdks is not None else detect_jdk()
+    compatible = []
+    for jdk in candidates:
+        if require_compiler and not jdk.get("hasCompiler"):
+            continue
+        v = _feature_version(jdk.get("version"))
+        if v is None or v < min_major:
+            continue
+        if max_major is not None and v > max_major:
+            continue
+        compatible.append((v, jdk["path"]))
+
+    if not compatible:
+        return None
+    if prefer is not None:
+        preferred = [c for c in compatible if c[0] == prefer]
+        if preferred:
+            return preferred[0][1]
+    return max(compatible, key=lambda c: c[0])[1]
+
+
+def required_java_range(software, version):
+    """Best-effort (min, max) feature-version range needed for `software`
+    `version`. `max` is None when only a minimum is known — running an
+    already-compiled jar just needs a JDK >= min; Spigot is the one case
+    with a hard upper bound too, because BuildTools enforces it itself at
+    compile time. Returns None if the requirement can't be determined."""
+    try:
+        if software == "spigot":
+            from . import buildtools
+            return buildtools.required_java_range(version)
+        if software == "velocity":
+            return None
+        manifest = fetch_json("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json")
+        info = next((v for v in manifest["versions"] if v["id"] == version), None)
+        if not info:
+            return None
+        vdata = fetch_json(info["url"])
+        major = vdata.get("javaVersion", {}).get("majorVersion")
+        return (major, None) if major else None
+    except Exception:
+        return None
+
+
+def jdk_compatibility(software, version):
+    """Detected JDKs annotated with whether each can actually be used for
+    `software` `version` — backs an explicit JDK picker (CLI wizard and the
+    MCPanel dropdown) instead of leaving the choice to silent auto-detection.
+    This matters most for Spigot: BuildTools enforces an exact compile-time
+    Java range that also happens to be what the compiled result needs to
+    run, so picking the wrong JDK fails loudly and only after minutes of
+    build time — better to show the user which ones actually work upfront."""
+    rng = required_java_range(software, version)
+    require_compiler = (software == "spigot")
+    jdks = detect_jdk()
+
+    annotated = []
+    for jdk in jdks:
+        v = _feature_version(jdk.get("version"))
+        compatible, reason = True, None
+        if require_compiler and not jdk.get("hasCompiler"):
+            compatible, reason = False, "JRE only — no compiler (javac)"
+        elif rng and v is not None:
+            lo, hi = rng
+            if v < lo or (hi is not None and v > hi):
+                compatible = False
+                reason = f"needs Java {lo}" + (f"–{hi}" if hi else "+")
+        annotated.append({**jdk, "compatible": compatible, "reason": reason})
+
+    recommended = None
+    if rng:
+        recommended = find_compatible_jdk(*rng, jdks=jdks, require_compiler=require_compiler)
+
+    return {
+        "range": {"min": rng[0], "max": rng[1]} if rng else None,
+        "jdks": annotated,
+        "recommended": recommended,
+    }
 
 
 def _total_ram_bytes():

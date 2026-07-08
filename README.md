@@ -79,6 +79,8 @@ mcpanel › /create server
 - **Command history** — ↑↓ recalls previous commands
 - **`/exit`** — leave the TUI and return to the terminal (servers keep running in the background)
 - **`/shutdown`** — kill all running servers then exit
+- **`/backup create|list|delete|restore`** and **`/buildtools version|update`** — same features as the command-line, with guided pickers for server/backup selection
+- **`/discover`** — re-scan `servers/` for folders dropped in since the TUI started (the one-shot CLI already does this on every startup)
 
 ```
 mcpanel › /create server
@@ -176,10 +178,56 @@ mcpanel versions -sw vanilla --prerelease
 mcpanel versions -sw paper --unstable
 ```
 
-Sources: PaperMC API (paper/folia/velocity), Purpur API, Mojang manifest (vanilla), FabricMC meta, GitHub releases (leaf). Spigot is a static list (needs BuildTools to actually build).
+Sources: PaperMC API (paper/folia/velocity), Purpur API, Mojang manifest (vanilla), FabricMC meta, GitHub releases (leaf). Spigot's version list is fetched live from `hub.spigotmc.org/versions/` (the same metadata directory BuildTools itself reads).
+
+### Plugins & mods
+| Command | What it does |
+|---------|--------------|
+| `search plugins \| mods <modrinth\|hangar\|spigotmc> [query] [-id <serverid>] [-v <MC version>] [-sw <software>] [-n <limit>] [-o <offset>]` | Search a platform for plugins/mods |
+| `install plugin \| mod <modrinth\|hangar\|spigotmc> <slug> -id <serverid> [-v <MC version>] [--owner <owner>] [--version <version>]` | Download + drop a plugin/mod into a server's `plugins/`/`mods/` folder (or `--profile-id <id>` to install into a profile instead) |
+| `info plugin <modrinth\|hangar\|spigotmc> <slug> [--owner <owner>]` | Version history + website link for a plugin/mod |
+
+```bash
+mcpanel search plugins modrinth luckperms -id srv_1700000000000
+mcpanel install plugin modrinth luckperms -id srv_1700000000000
+mcpanel install mod hangar someproject --owner someowner -id srv_1700000000000
+```
+
+`-id`/`-v` auto-detect the target Minecraft version from the server so results are pre-filtered to what's actually compatible. Hangar projects need `--owner` whenever the slug alone is ambiguous. Fabric servers install into `mods/`; everything else installs into `plugins/`.
+
+### Backups
+| Command | What it does |
+|---------|--------------|
+| `backup create -id <id>` | Zip the server folder (logs excluded) into `<data dir>/backups/<id>/backup_<timestamp>.zip` |
+| `backup list -id <id>` | List backups for a server |
+| `backup restore -id <id> -name <filename>` | Restore a server from a backup zip (overwrites current files) |
+| `backup delete -id <id> -name <filename>` | Delete a specific backup |
+
+### BuildTools (Spigot)
+Spigot ships no prebuilt jars — creating a Spigot server compiles one locally with SpigotMC's BuildTools. The CLI keeps its own copy of `BuildTools.jar` (downloaded once, in the CLI's own install directory, never overwritten after that) and runs it automatically the first time it's needed.
+
+| Command | What it does |
+|---------|--------------|
+| `buildtools version` | Show whether BuildTools is installed (downloads it if missing) |
+| `buildtools update` | Force `BuildTools.jar` to re-download now |
+| `fetch jdk-compat -sw <software> -v <version>` | Which detected JDKs can actually build/run a given software + version — BuildTools enforces an exact compile-time Java range, so this tells you upfront instead of failing after minutes of building |
+
+### Server discovery
+Every server folder carries a `mcpanel.json` manifest (a copy of its config entry, minus the machine-specific path). Drop a server folder — or a folder restored from a backup — straight into the `servers/` data directory and it self-registers automatically:
+
+```bash
+mcpanel discover          # re-scan servers/ for folders not yet registered; also runs on every CLI startup
+```
+
+### Shell completion
+```bash
+eval "$(mcpanel completion bash)"     # add to ~/.bashrc
+eval "$(mcpanel completion zsh)"      # add to ~/.zshrc
+```
+Completes command names, nouns, `-sw`/platform values, and live server IDs (via `mcpanel api list servers`).
 
 ### System
-`detect-jdk`, `system`, `version`, `check-update`, `config show`, `config path`.
+`detect-jdk` (now flags JRE-only installs via `hasCompiler`), `fetch jdk-compat`, `system`, `version`, `check-update`, `config show`, `config path`.
 
 ### Shutdown
 ```bash
@@ -203,6 +251,9 @@ mcpanel api fetch status  -id srv_123       # true / false
 mcpanel api ping server   -id srv_123       # { online, players, ... }
 mcpanel api create server -t x -sw paper -v 1.21.1   # { success, server }
 mcpanel api system                          # { totalRam, availableStorage }
+mcpanel api search plugins modrinth luckperms -id srv_123   # { results, hasMore }
+mcpanel api backup list -id srv_123         # { backups: [...] }
+mcpanel api fetch jdk-compat -sw spigot -v 1.21.1   # { range, jdks, recommended }
 ```
 
 Errors come back as `{"error": "..."}` with a non-zero exit code.
@@ -228,21 +279,26 @@ mcpanel/
 ├── tui.py          ← interactive REPL (mcpanel cli)
 ├── servers.py      ← server controllers (create/start/stop/…)
 ├── profiles.py     ← profile controllers
+├── plugins.py      ← plugin/mod search + install (Modrinth, Hangar, Spiget)
+├── backup.py       ← server backup create/list/restore/delete (zip)
+├── buildtools.py   ← SpigotMC BuildTools download + compile-on-create for Spigot
 ├── versions.py     ← version listing + download-URL resolution
 ├── supervisor.py   ← detached daemon that owns one running server
 ├── runstate.py     ← client helpers for talking to supervisors
 ├── ping.py         ← Minecraft server-list-ping
-├── system.py       ← JDK detection, system info, update check
+├── system.py       ← JDK detection (+ compatibility ranges), system info, update check
 ├── render.py       ← human-readable output + ANSI helpers
 └── http.py · util.py · config.py · paths.py
 ```
+
+`config.py` also owns each server's `mcpanel.json` manifest (see [Server discovery](#server-discovery)) — written on every create/update/duplicate/import so a server folder can be moved between installs or restored from backup and re-register itself.
 
 ---
 
 ## Notes
 
-- **Spigot** needs [BuildTools](https://www.spigotmc.org/wiki/buildtools/) — the server folder is created but no JAR is downloaded.
+- **Spigot** is compiled locally via [BuildTools](https://www.spigotmc.org/wiki/buildtools/), which the CLI downloads and runs automatically on first use — this requires a full JDK (not a JRE-only install) in the version BuildTools expects for that Minecraft version; run `mcpanel fetch jdk-compat -sw spigot -v <version>` to check first.
 - **Fabric** downloads the server-side loader JAR from FabricMC.
-- Match your Java version to the Minecraft version (1.20.5+ needs Java 21).
+- Match your Java version to the Minecraft version (1.20.5+ needs Java 21) — `detect-jdk` and `fetch jdk-compat` both report this per-JDK now.
 - The JSON shapes from `api` mirror the original Electron IPC return values 1:1.
 - The interactive TUI requires `prompt_toolkit` (installed automatically via pip). On terminals without ANSI support the TUI degrades gracefully to plain text.

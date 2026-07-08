@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcpanel-cli"
-version = "1.1.2"
+version = "1.2.0"
 description = "MCPanel — Minecraft Server Panel, as a CLI (terminal backend for MCPanel)"
 readme = "README.md"
 requires-python = ">=3.8"

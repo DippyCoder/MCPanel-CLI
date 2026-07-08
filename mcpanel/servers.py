@@ -12,8 +12,8 @@ import subprocess
 import sys
 import time
 
-from . import paths, runstate
-from .config import load_config, save_config, find_server
+from . import paths, runstate, buildtools
+from .config import load_config, save_config, find_server, write_server_manifest
 from .versions import resolve_download_url, SOFTWARE
 from .http import download_file
 from .ping import ping_server
@@ -138,7 +138,12 @@ def create_server(args, progress=None):
             with open(os.path.join(server_dir, "eula.txt"), "w", encoding="utf-8") as f:
                 f.write("eula=true\n")
 
-        if software != "spigot":
+        if software == "spigot":
+            err = buildtools.build_spigot(args.version, server_dir, progress,
+                                           java_path=server["javaPath"])
+            if err:
+                return err
+        else:
             if progress:
                 progress(0, "Resolving download URL...")
             url = resolve_download_url(software, args.version, getattr(args, "unstable", False))
@@ -149,6 +154,7 @@ def create_server(args, progress=None):
 
         cfg.setdefault("servers", []).append(server)
         save_config(cfg)
+        write_server_manifest(server)
         if progress:
             progress(100, "Done!")
         return {"success": True, "server": server}
@@ -206,6 +212,7 @@ def update_server(args, progress=None):
                 _write_port(os.path.join(cfg["servers"][idx]["dir"], "server.properties"), updates["port"])
 
         save_config(cfg)
+        write_server_manifest(cfg["servers"][idx])
         return {"success": True, "server": cfg["servers"][idx]}
     except Exception as e:
         return {"error": str(e)}
@@ -229,6 +236,7 @@ def duplicate_server(args, progress=None):
         new_server = {**src, "id": new_id, "name": args.name, "dir": new_dir, "created": _now_ms()}
         cfg["servers"].append(new_server)
         save_config(cfg)
+        write_server_manifest(new_server)
         return {"success": True, "server": new_server}
     except Exception as e:
         return {"error": str(e)}
@@ -259,6 +267,7 @@ def import_server(args, progress=None):
         }
         cfg.setdefault("servers", []).append(server)
         save_config(cfg)
+        write_server_manifest(server)
         if progress:
             progress(100, "Done!")
         return {"success": True, "server": server}
@@ -728,6 +737,7 @@ def link_to_proxy(args, progress=None):
                 "customIp": args.custom_ip or None,
             }
             save_config(cfg)
+            write_server_manifest(cfg["servers"][idx])
         return {"success": True, "serverName": server_name, "address": server_address}
     except Exception as e:
         return {"error": str(e)}

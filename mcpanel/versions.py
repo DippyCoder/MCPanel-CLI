@@ -4,7 +4,7 @@ main.js."""
 
 import re
 
-from .http import fetch_json, post_json
+from .http import fetch_json, fetch_text, post_json
 
 _FILL_GQL = "https://fill.papermc.io/graphql"
 _GQL_VERSIONS = '{{ project(key: "{project}") {{ versions(last: 100) {{ nodes {{ key support {{ status }} }} }} }} }}'
@@ -76,11 +76,43 @@ def fetch_leaf_versions(unstable=False):
     return list(_LEAF_FALLBACK)
 
 
+_SPIGOT_VERSIONS_INDEX = "https://hub.spigotmc.org/versions/"
+_SPIGOT_VERSION_NAME_RE = re.compile(r"^\d+(\.\d+)+(-[a-zA-Z0-9]+)?$")
+
+# Last-resort fallback if hub.spigotmc.org can't be reached — same idea as
+# _LEAF_FALLBACK below. The real fetcher below hits the same metadata
+# directory BuildTools itself reads, so this list only matters when offline.
+_SPIGOT_FALLBACK = ['1.21.11', '1.21.8', '1.21.4', '1.21.1', '1.21', '1.20.6', '1.20.4',
+                     '1.20.2', '1.20.1', '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19',
+                     '1.18.2', '1.18.1', '1.18', '1.17.1', '1.17', '1.16.5', '1.16.4',
+                     '1.16.3', '1.15.2', '1.14.4', '1.13.2', '1.12.2', '1.11.2', '1.10.2',
+                     '1.9.4', '1.8.8']
+
+
+def _spigot_version_sort_key(v):
+    m = re.match(r"^(\d+(?:\.\d+)*)(-.*)?$", v)
+    nums = tuple(int(x) for x in m.group(1).split(".")) if m else (0,)
+    is_final = 0 if (m and m.group(2)) else 1  # a version's final release ranks above its own pre-releases
+    return (nums, is_final)
+
+
 def fetch_spigot_versions(unstable=False):
-    return ['1.21.4', '1.21.3', '1.21.1', '1.21', '1.20.6', '1.20.4', '1.20.2', '1.20.1',
-            '1.19.4', '1.19.3', '1.19.2', '1.19.1', '1.19', '1.18.2', '1.18.1', '1.18',
-            '1.17.1', '1.17', '1.16.5', '1.16.4', '1.16.3', '1.15.2', '1.14.4', '1.13.2',
-            '1.12.2', '1.11.2', '1.10.2', '1.9.4', '1.8.8']
+    """Every version BuildTools can compile, fetched from SpigotMC's own
+    metadata directory (hub.spigotmc.org/versions/) — the same source
+    BuildTools itself consults — instead of a hardcoded list that inevitably
+    goes stale the moment a new MC version ships."""
+    try:
+        html = fetch_text(_SPIGOT_VERSIONS_INDEX)
+        names = re.findall(r'href="([^"/]+)\.json"', html)
+        versions = [n for n in names if n != "latest" and _SPIGOT_VERSION_NAME_RE.match(n)]
+        if not unstable:
+            versions = [v for v in versions if not _PRE_RE.search(v)]
+        if versions:
+            versions.sort(key=_spigot_version_sort_key, reverse=True)
+            return versions
+    except Exception:
+        pass
+    return list(_SPIGOT_FALLBACK)
 
 
 def fetch_folia_versions(unstable=False):

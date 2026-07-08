@@ -278,6 +278,29 @@ def render_jdk(result, args):
         print(f"  {bold(j.get('version', '?')):<12} {j.get('path')}")
 
 
+def render_jdk_compat(result, args):
+    rng = result.get("range")
+    if rng:
+        hi = rng.get("max")
+        print(f"  required: Java {rng.get('min')}" + (f"–{hi}" if hi else "+"))
+    else:
+        print(dim("  required: unknown (couldn't determine a Java requirement)"))
+    jdks = result.get("jdks", [])
+    if not jdks:
+        print(dim("  No Java installations detected."))
+        return
+    recommended = result.get("recommended")
+    for j in jdks:
+        mark = green("✓") if j.get("compatible") else red("✗")
+        tag = green(" (recommended)") if j.get("path") == recommended else ""
+        line = f"  {mark} {j.get('version', '?'):<10} {j.get('path')}{tag}"
+        print(line)
+        if not j.get("compatible") and j.get("reason"):
+            print(dim(f"      {j['reason']}"))
+    if not recommended:
+        print(yellow("\n  ⚠ No detected JDK satisfies this requirement — install one and re-run."))
+
+
 def render_system(result, args):
     print(f"  total RAM        : {util.human_size(result.get('totalRam'))}")
     print(f"  available storage: {util.human_size(result.get('availableStorage'))}")
@@ -296,9 +319,33 @@ def render_check_update(result, args):
         print(green("  ✓ Up to date"))
 
 
+def render_buildtools_version(result, args):
+    if result.get("version") == "installed":
+        print(green("  ✓ BuildTools installed"))
+        if result.get("path"):
+            print(dim(f"  {result['path']}"))
+        return
+    print(red("  ✗ BuildTools version: none"))
+    if result.get("error"):
+        print(f"  {result['error']}")
+    if result.get("helpUrl"):
+        print(dim(f"  See: {result['helpUrl']}"))
+
+
 def render_config(result, args):
     import json
     print(json.dumps(result, indent=2, default=str))
+
+
+def render_discover(result, args):
+    added = result.get("added", [])
+    if not added:
+        print(dim("No unregistered servers found."))
+        return
+    print(green(f"✓ Found {len(added)} server{'s' if len(added) != 1 else ''} on disk:"))
+    for s in added:
+        detail = f"[{s.get('id')}]  {s.get('software')} {s.get('version')}"
+        print(f"  {bold(s.get('name', '(unnamed)'))}  {dim(detail)}")
 
 
 def render_shutdown(result, args):
@@ -314,6 +361,85 @@ def render_shutdown(result, args):
     for f in failed:
         print(yellow("⚠ ") + f"could not stop {f['id']}: {f.get('error','')}")
     print(dim(f"Shutdown complete — {len(stopped)} server{'s' if len(stopped) != 1 else ''} stopped."))
+
+
+# ─── plugin / mod renderers ──────────────────────────────────────────────────
+def render_plugin_search(result, args):
+    if _err(result):
+        return
+    items = result.get("results", [])
+    if not items:
+        print(dim("No results found."))
+        return
+    print(bold(f"{'NAME':<28} {'AUTHOR':<18} {'DOWNLOADS':<11} {'UPDATED':<12} VERSION"))
+    for r in items:
+        name = (r.get("name") or "")[:27]
+        author = (r.get("author") or "")[:17]
+        dl = r.get("downloads", 0)
+        dl_str = f"{dl/1e6:.1f}M" if dl >= 1e6 else (f"{dl/1e3:.1f}K" if dl >= 1e3 else str(dl))
+        updated = (r.get("updatedAt") or "")[:10]
+        version = str(r.get("latestVersion") or "")[:12]
+        premium = yellow(" [PREMIUM]") if r.get("isPremium") else ""
+        external = yellow(" [EXTERNAL]") if r.get("external") else ""
+        print(f"{name:<28} {author:<18} {dl_str:<11} {updated:<12} {version}{premium}{external}")
+        if r.get("description"):
+            print(dim("  " + r["description"][:80]))
+        if r.get("external") and r.get("externalUrl"):
+            print(dim(f"  hosted externally — can't auto-install: {r['externalUrl']}"))
+    print(dim(f"\nInstall: mcpanel install plugin <platform> <slug> --id <serverid>"))
+
+
+def render_install_plugin(result, args):
+    if _err(result):
+        return
+    print(green("✓ ") + f"Installed {bold(result.get('filename', result.get('slug', '?')))} "
+          + dim(f"→ {result.get('path', '')}"))
+
+
+def render_plugin_info(result, args):
+    if _err(result):
+        return
+    versions = result.get("versions", [])
+    if not versions:
+        print(dim("No version history found."))
+    else:
+        print(bold(f"{'VERSION':<20} {'DATE':<12} CHANGELOG"))
+        for v in versions:
+            name = str(v.get("name") or "")[:19]
+            date = (v.get("date") or "")[:10]
+            changelog = (v.get("changelog") or "").replace("\n", " ")[:60]
+            print(f"{name:<20} {date:<12} {changelog}")
+    if result.get("hasMoreVersions"):
+        print(dim("(more versions available — increase -n or use -o to page)"))
+    if result.get("websiteUrl"):
+        print(dim(f"\nWebsite: {result['websiteUrl']}"))
+
+
+def render_completion(result, args):
+    print(result.get("_raw", result.get("script", "")), end="")
+
+
+# ─── backups ──────────────────────────────────────────────────────────────────
+def render_backup_list(result, args):
+    if _err(result):
+        return
+    backups = result.get("backups", [])
+    if not backups:
+        print(dim("No backups found. Create one with: mcpanel backup create -id <id>"))
+        return
+    print(bold(f"{'NAME':<34} {'SIZE':<10} CREATED"))
+    for b in backups:
+        created = _ts(b.get("created", 0))
+        size = util.human_size(b.get("size", 0))
+        print(f"  {b['name']:<34} {size:<10} {created}")
+
+
+def render_backup_create(result, args):
+    if _err(result):
+        return
+    b = result.get("backup", {})
+    print(green("✓ ") + f"Backup created: {bold(b.get('name', '?'))} "
+          + dim(f"({util.human_size(b.get('size', 0))})"))
 
 
 # ─── dispatch table ──────────────────────────────────────────────────────────
@@ -358,14 +484,30 @@ RENDERERS = {
     "github-themes": render_github_themes,
     "config": render_config,
     "jdk": render_jdk,
+    "jdk-compat": render_jdk_compat,
     "system": render_system,
     "app-version": render_app_version,
     "check-update": render_check_update,
     "debug-first-start": render_success,
     "shutdown": render_shutdown,
+    "discover": render_discover,
+    "search-plugins": render_plugin_search,
+    "search-mods": render_plugin_search,
+    "install-plugin": render_install_plugin,
+    "install-mod": render_install_plugin,
+    "info-plugin": render_plugin_info,
+    "completion-bash": render_completion,
+    "completion-zsh": render_completion,
+    "backup-create": render_backup_create,
+    "backup-list": render_backup_list,
+    "backup-delete": render_success,
+    "backup-restore": render_success,
+    "buildtools-version": render_buildtools_version,
+    "buildtools-update": render_buildtools_version,
 }
 
 
+# ─── dispatch ────────────────────────────────────────────────────────────────
 def render(action, result, args):
     fn = RENDERERS.get(action, render_config)
     fn(result, args)

@@ -14,8 +14,12 @@ import json
 import sys
 import time
 
-from . import paths, servers, profiles, system, versions, runstate, render
+from . import paths, servers, profiles, system, versions, runstate, render, plugins, backup, buildtools, config
 from . import __version__
+
+
+class _Streamed:
+    """Sentinel: command already wrote all output to stdout; main() skips the final print."""
 
 
 # ─── adapters for controllers that don't take (args, progress) ───────────────
@@ -25,6 +29,10 @@ def _versions(args, progress=None):
 
 def _detect_jdk(args=None, progress=None):
     return {"jdks": system.detect_jdk()}
+
+
+def _jdk_compat(args, progress=None):
+    return system.jdk_compatibility(args.software, args.version)
 
 
 def _system_info(args=None, progress=None):
@@ -39,6 +47,14 @@ def _check_update(args=None, progress=None):
     return system.check_update()
 
 
+def _buildtools_version(args=None, progress=None):
+    return buildtools.buildtools_version(progress=progress)
+
+
+def _buildtools_update(args=None, progress=None):
+    return buildtools.buildtools_update(progress=progress)
+
+
 def _config_path(args=None, progress=None):
     return {
         "userData": paths.USER_DATA,
@@ -49,6 +65,16 @@ def _config_path(args=None, progress=None):
         "run": paths.RUN_DIR,
     }
 
+
+
+_last_discovery = []  # populated by main()'s startup scan, before any command runs
+
+
+def _discover(args=None, progress=None):
+    # main() already ran the scan for this process (every invocation does) — a
+    # second scan here would always find nothing new, since the first one just
+    # registered it. Report what that startup scan actually found instead.
+    return {"added": _last_discovery}
 
 
 def _shutdown(args=None, progress=None):
@@ -76,6 +102,138 @@ def _cli_tui(args=None, progress=None):
     from . import tui
     tui.run()
     return None
+
+
+def _completion_bash(args=None, progress=None):
+    script = r"""# MCPanel bash completion
+# Add to ~/.bashrc:  eval "$(mcpanel completion bash)"
+_mcpanel_complete() {
+  local cur="${COMP_WORDS[COMP_CWORD]}"
+  local prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local words="${COMP_WORDS[*]}"
+
+  # server IDs
+  if [[ "$prev" == "-id" || "$prev" == "--id" ]]; then
+    local ids
+    ids=$(mcpanel api list servers 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print('\n'.join(s['id'] for s in d.get('servers', [])))" 2>/dev/null)
+    COMPREPLY=($(compgen -W "$ids" -- "$cur"))
+    return
+  fi
+
+  # platforms
+  if [[ "$words" =~ (install|search).*(plugin|mod|plugins|mods)[[:space:]] ]] && [[ "$prev" =~ (plugin|mod|plugins|mods) ]]; then
+    COMPREPLY=($(compgen -W "modrinth hangar spigotmc" -- "$cur"))
+    return
+  fi
+
+  # software
+  if [[ "$prev" == "-sw" || "$prev" == "--software" ]]; then
+    COMPREPLY=($(compgen -W "paper purpur folia leaf vanilla fabric velocity spigot" -- "$cur"))
+    return
+  fi
+
+  # top-level commands
+  if [[ $COMP_CWORD -eq 1 ]]; then
+    local cmds="create list info fetch delete update start stop restart kill cmd logs sessions console ping duplicate files stats accept-eula import proxy scan open versions detect-jdk system version check-update config shutdown discover search install completion backup buildtools api cli debug"
+    COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
+    return
+  fi
+
+  # nouns
+  local verb="${COMP_WORDS[1]}"
+  case "$verb" in
+    create)   COMPREPLY=($(compgen -W "server profile profile-from-server" -- "$cur")) ;;
+    list|ls)  COMPREPLY=($(compgen -W "servers profiles" -- "$cur")) ;;
+    info|fetch|delete|rm) COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    import)   COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    open)     COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    scan)     COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    proxy)    COMPREPLY=($(compgen -W "info link" -- "$cur")) ;;
+    config)   COMPREPLY=($(compgen -W "show path" -- "$cur")) ;;
+    search)   COMPREPLY=($(compgen -W "plugins mods" -- "$cur")) ;;
+    install)  COMPREPLY=($(compgen -W "plugin mod" -- "$cur")) ;;
+    completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")) ;;
+    buildtools) COMPREPLY=($(compgen -W "version update" -- "$cur")) ;;
+    debug)    COMPREPLY=($(compgen -W "first_start" -- "$cur")) ;;
+  esac
+}
+complete -F _mcpanel_complete mcpanel
+"""
+    return {"script": script, "_raw": script}
+
+
+def _completion_zsh(args=None, progress=None):
+    script = r"""# MCPanel zsh completion
+# Add to ~/.zshrc:  eval "$(mcpanel completion zsh)"
+_mcpanel() {
+  local state
+  typeset -A opt_args
+
+  _arguments \
+    '1: :->cmd' \
+    '*: :->args'
+
+  case $state in
+    cmd)
+      local cmds=(
+        'create:create a server or profile'
+        'list:list servers or profiles'
+        'info:show details'
+        'fetch:fetch raw data'
+        'delete:delete a server or profile'
+        'update:update server settings'
+        'start:start a server'
+        'stop:stop a server'
+        'restart:restart a server'
+        'kill:kill a server'
+        'cmd:send a command to a server'
+        'logs:show server logs'
+        'console:attach to live console'
+        'ping:ping a server'
+        'files:show file tree'
+        'stats:show disk usage'
+        'import:import a server or profile'
+        'versions:list available versions'
+        'search:search for plugins or mods'
+        'install:install a plugin or mod'
+        'completion:output shell completion script'
+        'buildtools:SpigotMC BuildTools version / update'
+        'discover:re-scan the servers directory for unregistered servers'
+        'system:show system info'
+        'version:show CLI version'
+        'api:raw JSON output mode'
+      )
+      _describe 'command' cmds
+      ;;
+    args)
+      case ${words[2]} in
+        search)
+          if [[ ${#words} -eq 3 ]]; then
+            _values 'type' 'plugins' 'mods'
+          elif [[ ${#words} -eq 4 ]]; then
+            _values 'platform' 'modrinth' 'hangar' 'spigotmc'
+          fi
+          ;;
+        install)
+          if [[ ${#words} -eq 3 ]]; then
+            _values 'type' 'plugin' 'mod'
+          elif [[ ${#words} -eq 4 ]]; then
+            _values 'platform' 'modrinth' 'hangar' 'spigotmc'
+          fi
+          ;;
+        create)
+          _values 'type' 'server' 'profile' 'profile-from-server' ;;
+        list|ls)
+          _values 'type' 'servers' 'profiles' ;;
+        completion)
+          _values 'shell' 'bash' 'zsh' ;;
+      esac
+      ;;
+  esac
+}
+compdef _mcpanel mcpanel
+"""
+    return {"script": script, "_raw": script}
 
 
 def _debug_first_start(args=None, progress=None):
@@ -152,9 +310,17 @@ def add_commands(sub):
 
     # info ---------------------------------------------------------------
     info = sub.add_parser("info", help="show details of a server / profile")
-    isub = info.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
+    isub = info.add_subparsers(dest="noun", metavar="<server|profile|plugin>", required=True)
     p = leaf(isub, "server", servers.fetch_server, "fetch-server"); f_id(p)
     p = leaf(isub, "profile", profiles.fetch_profile, "fetch-profile"); f_id(p)
+    p = leaf(isub, "plugin", plugins.get_plugin_info, "info-plugin",
+             help="show version history + website link for a plugin/mod")
+    p.add_argument("platform", metavar="<modrinth|hangar|spigotmc>")
+    p.add_argument("slug", metavar="<slug>")
+    p.add_argument("--owner", dest="owner", default=None, metavar="<owner>",
+                   help="Hangar project owner (required when slug is ambiguous)")
+    p.add_argument("-n", "--limit", dest="limit", type=int, default=25, metavar="<N>")
+    p.add_argument("-o", "--offset", dest="offset", type=int, default=0, metavar="<N>")
 
     # fetch (getters, JSON-friendly) ------------------------------------
     fetch = sub.add_parser("fetch", help="fetch raw data (server/profile/config/log/...)")
@@ -169,10 +335,15 @@ def add_commands(sub):
     leaf(fsub, "system", _system_info, "system")
     leaf(fsub, "update", _check_update, "check-update")
     leaf(fsub, "jdk", _detect_jdk, "jdk")
+    leaf(fsub, "buildtools", _buildtools_version, "buildtools-version", progress_ok=True)
     p = leaf(fsub, "versions", _versions, "versions")
     p.add_argument("-sw", "--software", dest="software", required=True)
     p.add_argument("--unstable", dest="unstable", action="store_true")
     p.add_argument("--prerelease", dest="prerelease", action="store_true")
+    p = leaf(fsub, "jdk-compat", _jdk_compat, "jdk-compat",
+             help="which detected JDKs can actually build/run a given software+version")
+    p.add_argument("-sw", "--software", dest="software", required=True)
+    p.add_argument("-v", "--version", dest="version", required=True)
     # delete -------------------------------------------------------------
     delete = sub.add_parser("delete", help="delete a server / profile", aliases=["rm"])
     dsub = delete.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
@@ -321,6 +492,82 @@ def add_commands(sub):
     p = sub.add_parser("shutdown", help="kill all running servers and stop MCPanel")
     p.set_defaults(func=_shutdown, action="shutdown")
 
+    # discover -------------------------------------------------------------
+    p = sub.add_parser("discover", help="re-scan the servers directory for unregistered servers")
+    p.set_defaults(func=_discover, action="discover")
+
+    # search -------------------------------------------------------------
+    srch = sub.add_parser("search", help="search for plugins or mods")
+    srchsub = srch.add_subparsers(dest="noun", metavar="<plugins|mods>", required=True)
+    for _sname in ("plugins", "mods"):
+        p = leaf(srchsub, _sname, plugins.search_plugins, f"search-{_sname}",
+                 help=f"search for {_sname} on a platform")
+        p.add_argument("platform", metavar="<modrinth|hangar|spigotmc>",
+                       help="platform to search (modrinth, hangar, spigotmc)")
+        p.add_argument("query", nargs="?", default="", metavar="<query>")
+        p.add_argument("-id", "--id", dest="id", default=None, metavar="<serverid>",
+                       help="server id (used to auto-detect MC version)")
+        p.add_argument("-v", "--mc-version", dest="mc_version", default=None, metavar="<MC version>")
+        p.add_argument("-sw", "--software", dest="software", default="paper", metavar="<software>")
+        p.add_argument("-n", "--limit", dest="limit", type=int, default=20, metavar="<N>")
+        p.add_argument("-o", "--offset", dest="offset", type=int, default=0, metavar="<N>",
+                       help="pagination offset (for loading more results)")
+
+    # install ------------------------------------------------------------
+    inst = sub.add_parser("install", help="install a plugin or mod to a server")
+    instsub = inst.add_subparsers(dest="noun", metavar="<plugin|mod>", required=True)
+    for _iname in ("plugin", "mod"):
+        p = leaf(instsub, _iname, plugins.install_plugin, f"install-{_iname}",
+                 progress_ok=True, help=f"install a {_iname} from a platform")
+        p.add_argument("platform", metavar="<modrinth|hangar|spigotmc>",
+                       help="platform (modrinth, hangar, spigotmc)")
+        p.add_argument("slug", metavar="<slug>",
+                       help="plugin/mod slug or id on the platform")
+        p.add_argument("-id", "--id", dest="id", default=None, metavar="<serverid>",
+                       help="server id to install into")
+        p.add_argument("--profile-id", dest="profile_id", default=None, metavar="<profileid>",
+                       help="profile id to install into instead of a server")
+        p.add_argument("-v", "--mc-version", dest="mc_version", default=None, metavar="<MC version>",
+                       help="target MC version (defaults to server version)")
+        p.add_argument("--owner", dest="owner", default=None, metavar="<owner>",
+                       help="Hangar project owner (required when slug is ambiguous)")
+        p.add_argument("--version", dest="version", default=None, metavar="<version>",
+                       help="pin a specific plugin version")
+
+    # completion ---------------------------------------------------------
+    comp = sub.add_parser("completion", help="output shell completion script")
+    compsub = comp.add_subparsers(dest="noun", metavar="<bash|zsh>", required=True)
+    leaf(compsub, "bash", _completion_bash, "completion-bash",
+         help="bash completion script (eval \"$(mcpanel completion bash)\")")
+    leaf(compsub, "zsh", _completion_zsh, "completion-zsh",
+         help="zsh completion script (eval \"$(mcpanel completion zsh)\")")
+
+    # backup -------------------------------------------------------------
+    bkp = sub.add_parser("backup", help="create / list / restore / delete server backups")
+    bkpsub = bkp.add_subparsers(dest="noun", metavar="<create|list|delete|restore>", required=True)
+    p = leaf(bkpsub, "create", backup.create_backup, "backup-create", progress_ok=True,
+             help="create a zip backup of a server folder")
+    f_id(p)
+    p = leaf(bkpsub, "list", backup.list_backups, "backup-list",
+             help="list backups for a server")
+    f_id(p)
+    p = leaf(bkpsub, "delete", backup.delete_backup, "backup-delete",
+             help="delete a specific backup")
+    f_id(p)
+    p.add_argument("-name", "--name", dest="backup_name", required=True, metavar="<filename>")
+    p = leaf(bkpsub, "restore", backup.restore_backup, "backup-restore", progress_ok=True,
+             help="restore a server from a backup")
+    f_id(p)
+    p.add_argument("-name", "--name", dest="backup_name", required=True, metavar="<filename>")
+
+    # buildtools -----------------------------------------------------------
+    bt = sub.add_parser("buildtools", help="SpigotMC BuildTools version / update")
+    btsub = bt.add_subparsers(dest="noun", metavar="<version|update>", required=True)
+    leaf(btsub, "version", _buildtools_version, "buildtools-version", progress_ok=True,
+         help="show whether BuildTools is installed (installs it if missing)")
+    leaf(btsub, "update", _buildtools_update, "buildtools-update", progress_ok=True,
+         help="force BuildTools.jar to update now")
+
     # debug --------------------------------------------------------------
     dbg = sub.add_parser("debug", help="debugging utilities for MCPanel development")
     dbgsub = dbg.add_subparsers(dest="noun", metavar="<command>", required=True)
@@ -412,6 +659,13 @@ def main(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    buildtools.startup_check()
+    global _last_discovery
+    try:
+        _last_discovery = config.discover_servers()
+    except Exception:
+        _last_discovery = []
+
     if not hasattr(args, "func"):
         # bare `mcpanel` or `mcpanel <verb>` with no subcommand
         parser.print_help()
@@ -446,9 +700,9 @@ def main(argv=None):
             print(render.red("✗ " + str(e)))
         return 1
 
-    if is_json:
+    if is_json and not isinstance(result, _Streamed):
         print(json.dumps(result, default=str))
-    else:
+    elif not is_json:
         render.render(getattr(args, "action", ""), result, args)
 
     if isinstance(result, dict) and result.get("error"):

@@ -31,7 +31,7 @@ try:
 except ImportError:
     _PT = False
 
-from . import paths, render, runstate
+from . import paths, render, runstate, config
 from . import __version__
 from .config import load_config
 from .versions import SOFTWARE
@@ -43,11 +43,12 @@ _VERBS = [
     "create", "list", "ls", "info", "start", "stop", "restart", "kill",
     "cmd", "logs", "console", "sessions", "delete", "rm", "update",
     "duplicate", "clone", "import", "scan", "open", "ping", "files",
-    "stats", "accept-eula", "versions", "detect-jdk", "jdk", "system",
+    "stats", "accept-eula", "backup", "buildtools", "discover", "versions", "detect-jdk", "jdk", "system",
     "version", "check-update", "config", "help", "exit", "quit", "shutdown",
 ]
 
 _NOUNS = {
+    "backup":      ["create", "list", "delete", "restore"],
     "create":      ["server", "profile", "profile-from-server"],
     "list":        ["servers", "profiles"],
     "ls":          ["servers", "profiles"],
@@ -73,6 +74,7 @@ _NOUNS = {
     "stats":       ["server"],
     "accept-eula": ["server"],
     "config":      ["show", "path"],
+    "buildtools":  ["version", "update"],
 }
 
 _FLAGS = {
@@ -103,6 +105,10 @@ _FLAGS = {
     ("open",    "server"):   ["-id"],
     ("open",    "profile"):  ["-id"],
     ("accept-eula","server"):["-id"],
+    ("backup", "create"):    ["-id"],
+    ("backup", "list"):      ["-id"],
+    ("backup", "delete"):    ["-id", "-name"],
+    ("backup", "restore"):   ["-id", "-name"],
     ("versions",None):       ["-sw", "--unstable", "--prerelease"],
 }
 
@@ -136,6 +142,10 @@ _USAGE = {
     ("open",    "server"):   "/open server -id <id>",
     ("open",    "profile"):  "/open profile -id <id>",
     ("accept-eula","server"):"/accept-eula server -id <id>",
+    ("backup", "create"):    "/backup create -id <id>",
+    ("backup", "list"):      "/backup list -id <id>",
+    ("backup", "delete"):    "/backup delete -id <id> -name <filename>",
+    ("backup", "restore"):   "/backup restore -id <id> -name <filename>",
     ("versions",None):       "/versions -sw <paper|purpur|velocity|fabric|vanilla|leaf|folia|spigot> [--unstable] [--prerelease]",
     ("detect-jdk",None):     "/detect-jdk",
     ("system",  None):       "/system",
@@ -143,6 +153,9 @@ _USAGE = {
     ("check-update",None):   "/check-update",
     ("config",  "show"):     "/config show",
     ("config",  "path"):     "/config path",
+    ("buildtools", "version"): "/buildtools version",
+    ("buildtools", "update"):  "/buildtools update",
+    ("discover", None):        "/discover",
 }
 
 
@@ -449,6 +462,12 @@ def _wizard_create_server(flags):
     if not version:
         return
 
+    java = flags.get("java")
+    if not java and sw == "spigot":
+        java = _pick_jdk_for_spigot(version)
+        if java is None:
+            return
+
     ram  = flags.get("ram")  or _ask("RAM", default="2G")
     port = flags.get("port") or _ask("Port", default="25565")
     try:
@@ -462,10 +481,45 @@ def _wizard_create_server(flags):
     from . import servers
     ns = types.SimpleNamespace(
         name=name, software=sw, version=version, ram=ram, port=port,
-        profile=None, java=None, jargs=None, storage=None,
+        profile=None, java=java, jargs=None, storage=None,
         unstable=False, accept_eula=accept,
     )
     _pr("create-server", servers.create_server(ns))
+
+
+def _pick_jdk_for_spigot(version):
+    """Explicit JDK selector for Spigot — BuildTools enforces an exact
+    compile-time Java range that also matches what the compiled server needs
+    to run, so silently auto-picking (or worse, silently falling back to a
+    wrong default) can waste minutes on a doomed build. Returns a java path,
+    or None if the user backs out."""
+    from . import system
+    print(f"\n  Checking installed JDKs for Spigot {version}...")
+    compat = system.jdk_compatibility("spigot", version)
+    rng = compat.get("range")
+    if rng:
+        hi = rng.get("max")
+        req = f"Java {rng.get('min')}" + (f"–{hi}" if hi else "+")
+    else:
+        req = "an unknown Java version"
+
+    good = [j for j in compat.get("jdks", []) if j.get("compatible")]
+    if good:
+        labels = [f"{j['version']}  —  {j['path']}" for j in good]
+        labels.append("Enter a custom path…")
+        recommended = compat.get("recommended")
+        default_idx = next((i for i, j in enumerate(good) if j["path"] == recommended), 0)
+        choice = _pick(f"Select a JDK for BuildTools (needs {req}):", labels, default=default_idx)
+        if choice == labels[-1]:
+            return _ask("Java executable path") or None
+        return good[labels.index(choice)]["path"]
+
+    print(render.yellow(f"\n  ⚠ No installed JDK satisfies {req}."))
+    for j in compat.get("jdks", []):
+        print(f"    {j['version']}  {j['path']}  — {j.get('reason', 'incompatible')}")
+    if not _confirm("\n  Continue anyway with a manually entered path?"):
+        return None
+    return _ask("Java executable path") or None
 
 
 def _wizard_create_profile(flags):
@@ -845,6 +899,77 @@ def _dispatch(verb, noun, flags):
         _pr("accept-eula", servers.accept_eula(types.SimpleNamespace(id=sid)))
         return
 
+    # ── backup ────────────────────────────────────────────────────────────
+    if verb == "backup":
+        from . import backup as _bkp
+        if noun in ("create", None):
+            sid = flags.get("id") or _pick_server("Select server to back up:")
+            print(f"\n  Creating backup of {sid}…")
+            ns = types.SimpleNamespace(id=sid, json=False)
+            _pr("backup-create", _bkp.create_backup(ns, progress=lambda p, s: print(f"\r  {s:<50}", end="")))
+            print()
+        elif noun == "list":
+            sid = flags.get("id") or _pick_server("Select server:")
+            _pr("backup-list", _bkp.list_backups(types.SimpleNamespace(id=sid)))
+        elif noun == "delete":
+            sid = flags.get("id") or _pick_server("Select server:")
+            name = flags.get("name") or flags.get("backup_name")
+            if not name:
+                res = _bkp.list_backups(types.SimpleNamespace(id=sid))
+                names = [b["name"] for b in res.get("backups", [])]
+                if not names:
+                    print(render.yellow("\n  No backups found for this server."))
+                    return
+                name = _pick("Select backup to delete:", names)
+            if not name:
+                return
+            if not _confirm(f"\n  Delete backup {name!r}?"):
+                print(render.dim("  Aborted."))
+                return
+            _pr("backup-delete", _bkp.delete_backup(types.SimpleNamespace(id=sid, backup_name=name)))
+        elif noun == "restore":
+            sid = flags.get("id") or _pick_server("Select server:")
+            name = flags.get("name") or flags.get("backup_name")
+            if not name:
+                res = _bkp.list_backups(types.SimpleNamespace(id=sid))
+                names = [b["name"] for b in res.get("backups", [])]
+                if not names:
+                    print(render.yellow("\n  No backups found for this server."))
+                    return
+                name = _pick("Select backup to restore:", names)
+            if not name:
+                return
+            if not _confirm(f"\n  Restore {name!r}? This will overwrite current server files."):
+                print(render.dim("  Aborted."))
+                return
+            print(f"\n  Restoring {name}…")
+            ns = types.SimpleNamespace(id=sid, backup_name=name, json=False)
+            _pr("backup-restore", _bkp.restore_backup(ns, progress=lambda p, s: print(f"\r  {s:<50}", end="")))
+            print()
+        else:
+            print(render.yellow(f"  Unknown: /backup {noun}  — use create|list|delete|restore"))
+        return
+
+    # ── buildtools ────────────────────────────────────────────────────────
+    if verb == "buildtools":
+        from . import buildtools as _bt
+        if noun == "update":
+            print("\n  Updating BuildTools…")
+            _pr("buildtools-update", _bt.buildtools_update(progress=lambda p, s: print(f"\r  {s:<50}", end="")))
+            print()
+        else:
+            _pr("buildtools-version", _bt.buildtools_version())
+        return
+
+    # ── discover ──────────────────────────────────────────────────────────
+    if verb == "discover":
+        # Unlike the one-shot CLI (where main()'s startup scan already covers
+        # each invocation), the TUI is long-running, so re-scan live here to
+        # pick up folders dropped in since it started.
+        added = config.discover_servers()
+        _pr("discover", {"added": added})
+        return
+
     # ── scan ──────────────────────────────────────────────────────────────
     if verb == "scan":
         path = flags.get("path")
@@ -927,6 +1052,12 @@ def _help():
   /scan server -path <dir> detect port/software in a folder
   /import server           import an existing server folder
 
+{C("  Backups")}
+  /backup create -id <id>                create a backup zip
+  /backup list -id <id>                  list all backups
+  /backup delete -id <id> -name <file>   delete a backup
+  /backup restore -id <id> -name <file>  restore from a backup
+
 {C("  Profiles")}
   /create profile          /list profiles
   /info profile            /delete profile
@@ -939,6 +1070,9 @@ def _help():
   /system                    RAM + storage info
   /version                   MCPanel CLI version
   /check-update              check for a newer release
+  /buildtools version        show installed / latest BuildTools build
+  /buildtools update          force BuildTools.jar to update now
+  /discover                  re-scan the servers directory for unregistered servers
 
 {C("  General")}
   /config show | path      raw config / data-directory paths
