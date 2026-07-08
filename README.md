@@ -41,7 +41,7 @@ Three faces to the same engine:
 .\install.ps1 -Uninstall
 ```
 
-No install required — run straight from the checkout:
+No install required - run straight from the checkout:
 
 ```bash
 # Linux / macOS
@@ -71,16 +71,16 @@ Override with the `MCPANEL_HOME` environment variable.
 mcpanel › /create server
 ```
 
-- **Commands start with `/`** — `/create server`, `/list servers`, `/start server`, …
-- **Tab completion** — completes command names, nouns, flag names, server IDs, and software names, with a usage hint shown inline for each match
-- **Live usage tooltip** — the bottom toolbar updates as you type, showing the full syntax for the current command
-- **Guided wizards** — enter a command without arguments and you get prompted for each one interactively (name, software picker, version picker, RAM, port, EULA)
-- **Arrow-key pickers** — selecting a server, software, or version shows a scrollable inline list; ↑↓ to navigate, Enter to confirm, Esc to cancel
-- **Command history** — ↑↓ recalls previous commands
-- **`/exit`** — leave the TUI and return to the terminal (servers keep running in the background)
-- **`/shutdown`** — kill all running servers then exit
-- **`/backup create|list|delete|restore`** and **`/buildtools version|update`** — same features as the command-line, with guided pickers for server/backup selection
-- **`/discover`** — re-scan `servers/` for folders dropped in since the TUI started (the one-shot CLI already does this on every startup)
+- **Commands start with `/`** - `/create server`, `/list servers`, `/start server`, …
+- **Tab completion** - completes command names, nouns, flag names, server IDs, and software names, with a usage hint shown inline for each match
+- **Live usage tooltip** - the bottom toolbar updates as you type, showing the full syntax for the current command
+- **Guided wizards** - enter a command without arguments and you get prompted for each one interactively (name, software picker, version picker, RAM, port, EULA)
+- **Arrow-key pickers** - selecting a server, software, or version shows a scrollable inline list; ↑↓ to navigate, Enter to confirm, Esc to cancel
+- **Command history** - ↑↓ recalls previous commands
+- **`/exit`** - leave the TUI and return to the terminal (servers keep running in the background)
+- **`/shutdown`** - kill all running servers then exit
+- **`/backup create|list|delete|restore`** and **`/buildtools version|update`** - same features as the command-line, with guided pickers for server/backup selection
+- **`/discover`** - re-scan `servers/` for folders dropped in since the TUI started (the one-shot CLI already does this on every startup)
 
 ```
 mcpanel › /create server
@@ -204,16 +204,16 @@ mcpanel install mod hangar someproject --owner someowner -id srv_1700000000000
 | `backup delete -id <id> -name <filename>` | Delete a specific backup |
 
 ### BuildTools (Spigot)
-Spigot ships no prebuilt jars — creating a Spigot server compiles one locally with SpigotMC's BuildTools. The CLI keeps its own copy of `BuildTools.jar` (downloaded once, in the CLI's own install directory, never overwritten after that) and runs it automatically the first time it's needed.
+Spigot ships no prebuilt jars - creating a Spigot server compiles one locally with SpigotMC's BuildTools. The CLI keeps its own copy of `BuildTools.jar` (downloaded once, in the CLI's own install directory, never overwritten after that) and runs it automatically the first time it's needed.
 
 | Command | What it does |
 |---------|--------------|
 | `buildtools version` | Show whether BuildTools is installed (downloads it if missing) |
 | `buildtools update` | Force `BuildTools.jar` to re-download now |
-| `fetch jdk-compat -sw <software> -v <version>` | Which detected JDKs can actually build/run a given software + version — BuildTools enforces an exact compile-time Java range, so this tells you upfront instead of failing after minutes of building |
+| `fetch jdk-compat -sw <software> -v <version>` | Which detected JDKs can actually build/run a given software + version - BuildTools enforces an exact compile-time Java range, so this tells you upfront instead of failing after minutes of building |
 
 ### Server discovery
-Every server folder carries a `mcpanel.json` manifest (a copy of its config entry, minus the machine-specific path). Drop a server folder — or a folder restored from a backup — straight into the `servers/` data directory and it self-registers automatically:
+Every server folder carries a `mcpanel.json` manifest (a copy of its config entry, minus the machine-specific path). Drop a server folder - or a folder restored from a backup - straight into the `servers/` data directory and it self-registers automatically:
 
 ```bash
 mcpanel discover          # re-scan servers/ for folders not yet registered; also runs on every CLI startup
@@ -237,9 +237,9 @@ Also available as `/shutdown` inside `mcpanel cli` (servers keep running if you 
 
 ---
 
-## 🤖 API mode (terminal as backend)
+## API mode (terminal as backend)
 
-Prefix **any** command with `api` to get raw JSON — ideal for scripting or wiring a UI on top:
+Prefix **any** command with `api` to get raw JSON - ideal for scripting or wiring a UI on top:
 
 ```bash
 mcpanel api fetch server  -id srv_123      # one server (+ running flag)
@@ -291,14 +291,14 @@ mcpanel/
 └── http.py · util.py · config.py · paths.py
 ```
 
-`config.py` also owns each server's `mcpanel.json` manifest (see [Server discovery](#server-discovery)) — written on every create/update/duplicate/import so a server folder can be moved between installs or restored from backup and re-register itself.
+`config.py` also owns each server's `mcpanel.json` manifest (see [Server discovery](#server-discovery)) - written on every create/update/duplicate/import so a server folder can be moved between installs or restored from backup and re-register itself.
 
 ---
 
 ## Notes
 
-- **Spigot** is compiled locally via [BuildTools](https://www.spigotmc.org/wiki/buildtools/), which the CLI downloads and runs automatically on first use — this requires a full JDK (not a JRE-only install) in the version BuildTools expects for that Minecraft version; run `mcpanel fetch jdk-compat -sw spigot -v <version>` to check first.
+- **Spigot** is compiled locally via [BuildTools](https://www.spigotmc.org/wiki/buildtools/), which the CLI downloads and runs automatically on first use - this requires a full JDK (not a JRE-only install) in the version BuildTools expects for that Minecraft version; run `mcpanel fetch jdk-compat -sw spigot -v <version>` to check first.
 - **Fabric** downloads the server-side loader JAR from FabricMC.
-- Match your Java version to the Minecraft version (1.20.5+ needs Java 21) — `detect-jdk` and `fetch jdk-compat` both report this per-JDK now.
+- Match your Java version to the Minecraft version (1.20.5+ needs Java 21) - `detect-jdk` and `fetch jdk-compat` both report this per-JDK now.
 - The JSON shapes from `api` mirror the original Electron IPC return values 1:1.
 - The interactive TUI requires `prompt_toolkit` (installed automatically via pip). On terminals without ANSI support the TUI degrades gracefully to plain text.
