@@ -5,7 +5,9 @@ Launch with:  mcpanel cli
   /create server            guided wizard
   /create server -t "name"  direct with some flags (wizard fills the rest)
   /list servers             no wizard needed
-  Tab                       complete commands, IDs, software names, flags
+  /search plugins modrinth  find plugins/mods; /install plugin … to install one
+  /proxy link               link a Paper-based server into a Velocity proxy
+  Tab                       complete commands, IDs, software + platform names, flags
   ↑ ↓                       command history / picker navigation
   /help                     full command list
   /exit  or  Ctrl-D         leave the TUI (servers keep running)
@@ -43,16 +45,22 @@ _VERBS = [
     "create", "list", "ls", "info", "start", "stop", "restart", "kill",
     "cmd", "logs", "console", "sessions", "delete", "rm", "update",
     "duplicate", "clone", "import", "scan", "open", "ping", "files",
-    "stats", "accept-eula", "backup", "buildtools", "discover", "versions", "detect-jdk", "jdk", "system",
+    "stats", "accept-eula", "backup", "search", "install", "proxy",
+    "buildtools", "discover", "versions", "detect-jdk", "jdk", "system",
     "version", "check-update", "config", "help", "exit", "quit", "shutdown",
 ]
+
+_PLATFORMS = ["modrinth", "hangar", "spigotmc"]
 
 _NOUNS = {
     "backup":      ["create", "list", "delete", "restore"],
     "create":      ["server", "profile", "profile-from-server"],
     "list":        ["servers", "profiles"],
     "ls":          ["servers", "profiles"],
-    "info":        ["server", "profile"],
+    "info":        ["server", "profile", "plugin"],
+    "search":      ["plugins", "mods"],
+    "install":     ["plugin", "mod"],
+    "proxy":       ["info", "link"],
     "start":       ["server"],
     "stop":        ["server"],
     "restart":     ["server"],
@@ -92,6 +100,9 @@ _FLAGS = {
     ("sessions","server"):   ["-id"],
     ("delete",  "server"):   ["-id"],
     ("delete",  "profile"):  ["-id"],
+    ("rm",      "server"):   ["-id"],
+    ("rm",      "profile"):  ["-id"],
+    ("clone",   "server"):   ["-id", "-t"],
     ("info",    "server"):   ["-id"],
     ("info",    "profile"):  ["-id"],
     ("ping",    "server"):   ["-id", "-host", "-port"],
@@ -109,7 +120,25 @@ _FLAGS = {
     ("backup", "list"):      ["-id"],
     ("backup", "delete"):    ["-id", "-name"],
     ("backup", "restore"):   ["-id", "-name"],
+    ("info",    "plugin"):   ["--owner", "-n", "-o"],
+    ("search",  "plugins"):  ["-id", "-v", "-sw", "-n", "-o"],
+    ("search",  "mods"):     ["-id", "-v", "-sw", "-n", "-o"],
+    ("install", "plugin"):   ["-id", "--profile-id", "-v", "--owner", "--version"],
+    ("install", "mod"):      ["-id", "--profile-id", "-v", "--owner", "--version"],
+    ("proxy",   "info"):     ["--velocity-id"],
+    ("proxy",   "link"):     ["-id", "--velocity-id", "--server-name", "--priority", "--custom-ip"],
     ("versions",None):       ["-sw", "--unstable", "--prerelease"],
+}
+
+# Positional (non-flag) arguments each command takes, in order. A list of
+# strings completes to those values; None means free text (slug, query) with
+# nothing sensible to suggest.
+_POSITIONALS = {
+    ("info",    "plugin"):  [_PLATFORMS, None],
+    ("search",  "plugins"): [_PLATFORMS, None],
+    ("search",  "mods"):    [_PLATFORMS, None],
+    ("install", "plugin"):  [_PLATFORMS, None],
+    ("install", "mod"):     [_PLATFORMS, None],
 }
 
 _USAGE = {
@@ -119,6 +148,11 @@ _USAGE = {
     ("update",  "server"):   "/update server -id <id> [-t <name>] [-ram <MB>] [-port <n>] [-sw <sw>] [-v <ver>]",
     ("list",    "servers"):  "/list servers",
     ("list",    "profiles"): "/list profiles",
+    ("ls",      "servers"):  "/ls servers",
+    ("ls",      "profiles"): "/ls profiles",
+    ("rm",      "server"):   "/rm server -id <id>",
+    ("rm",      "profile"):  "/rm profile -id <id>",
+    ("clone",   "server"):   "/clone server -id <id> -t <new name>",
     ("info",    "server"):   "/info server -id <id>",
     ("info",    "profile"):  "/info profile -id <id>",
     ("start",   "server"):   "/start server -id <id> [--accept-eula]",
@@ -146,6 +180,13 @@ _USAGE = {
     ("backup", "list"):      "/backup list -id <id>",
     ("backup", "delete"):    "/backup delete -id <id> -name <filename>",
     ("backup", "restore"):   "/backup restore -id <id> -name <filename>",
+    ("info",    "plugin"):   "/info plugin <modrinth|hangar|spigotmc> <slug> [--owner <owner>] [-n <N>] [-o <N>]",
+    ("search",  "plugins"):  "/search plugins <modrinth|hangar|spigotmc> [query] [-id <id>] [-v <mcVersion>] [-n <N>] [-o <N>]",
+    ("search",  "mods"):     "/search mods <modrinth|hangar|spigotmc> [query] [-id <id>] [-v <mcVersion>] [-n <N>] [-o <N>]",
+    ("install", "plugin"):   "/install plugin <modrinth|hangar|spigotmc> <slug> [-id <id>] [--profile-id <id>] [--owner <owner>] [--version <ver>]",
+    ("install", "mod"):      "/install mod <modrinth|hangar|spigotmc> <slug> [-id <id>] [--profile-id <id>] [--owner <owner>] [--version <ver>]",
+    ("proxy",   "info"):     "/proxy info [--velocity-id <id>]",
+    ("proxy",   "link"):     "/proxy link [-id <id>] [--velocity-id <id>] [--server-name <name>] [--priority <pos>] [--custom-ip <ip:port>]",
     ("versions",None):       "/versions -sw <paper|purpur|velocity|fabric|vanilla|leaf|folia|spigot> [--unstable] [--prerelease]",
     ("detect-jdk",None):     "/detect-jdk",
     ("system",  None):       "/system",
@@ -343,8 +384,11 @@ class _Completer(Completer):
                          and not parts[1].startswith("-") else None)
         flag_parts = parts[2:] if noun else parts[1:]
         avail = _FLAGS.get((verb, noun), [])
-        last  = parts[-1] if parts else ""
-        prev  = parts[-2] if len(parts) >= 2 else ""
+        # After a trailing space the cursor sits on a fresh, empty token, so the
+        # last typed token is the *previous* one — otherwise Tab right after
+        # "-sw " or "-id " would look at the wrong word and offer nothing.
+        last  = "" if trailing_space else (parts[-1] if parts else "")
+        prev  = parts[-1] if trailing_space else (parts[-2] if len(parts) >= 2 else "")
 
         # ── completing -id argument value ──
         if prev in ("-id", "--id"):
@@ -361,6 +405,24 @@ class _Completer(Completer):
             for sw in SOFTWARE:
                 yield Completion(sw, start_position=0)
             return
+
+        # ── completing a positional argument (platform, slug, …) ──
+        specs = _POSITIONALS.get((verb, noun))
+        if specs and not last.startswith("-"):
+            typed = flag_parts if trailing_space else flag_parts[:-1]
+            # A bare token right after a flag belongs to that flag, not to the
+            # positional sequence.
+            if not (typed and typed[-1].startswith("-")):
+                done, _ = _split_args(typed)
+                prefix = "" if trailing_space else last
+                if len(done) < len(specs):
+                    choices = specs[len(done)]
+                    if choices:
+                        for c in choices:
+                            if c.startswith(prefix):
+                                yield Completion(c, start_position=-len(prefix),
+                                                 display_meta="platform")
+                        return
 
         # ── completing flag names ──
         if last.startswith("-") or trailing_space:
@@ -395,8 +457,13 @@ def _toolbar(text):
 
 # ── flag parser ───────────────────────────────────────────────────────────────
 
-def _parse_flags(parts):
-    """Return a flat dict of flag→value from a token list."""
+def _split_args(parts):
+    """Split a token list into (positionals, flags).
+
+    A bare token following a flag is that flag's value; anything else is a
+    positional (platform / slug / query for the plugin commands).
+    """
+    positionals = []
     flags = {}
     i = 0
     while i < len(parts):
@@ -410,26 +477,49 @@ def _parse_flags(parts):
                 flags[key] = True
                 i += 1
         else:
+            positionals.append(p)
             i += 1
-    return flags
+    return positionals, flags
+
+
+def _flag_str(flags, *keys):
+    """First string value among `keys`. A bare flag (no value) counts as unset."""
+    for k in keys:
+        v = flags.get(k)
+        if isinstance(v, str) and v:
+            return v
+    return None
+
+
+def _flag_int(flags, keys, default=None):
+    v = _flag_str(flags, *keys)
+    if v is None:
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        return default
 
 
 # ── result printer ────────────────────────────────────────────────────────────
 
 def _pr(action, result):
     import argparse
-    render.render(action, result, argparse.Namespace())
+    # tui=True lets renderers spell follow-up commands the TUI way (/install …).
+    render.render(action, result, argparse.Namespace(tui=True))
 
 
 # ── wizards ───────────────────────────────────────────────────────────────────
 
-def _pick_server(prompt="Select server:", running_only=False):
+def _pick_server(prompt="Select server:", running_only=False, softwares=None, label=None):
     """Picker that returns server id or raises KeyboardInterrupt."""
     entries = _server_entries()
     if running_only:
         entries = [s for s in entries if runstate.is_running(s["id"])]
+    if softwares is not None:
+        entries = [s for s in entries if s.get("software") in softwares]
     if not entries:
-        label = "running " if running_only else ""
+        label = label or ("running " if running_only else "")
         print(render.yellow(f"\n  No {label}servers found."))
         raise KeyboardInterrupt
     labels = [f"{s['id']}  {s.get('name','')}" for s in entries]
@@ -637,6 +727,123 @@ def _wizard_delete_profile(flags):
     _pr("delete-profile", profiles.delete_profile(types.SimpleNamespace(id=pid)))
 
 
+# ── plugin / mod wizards ──────────────────────────────────────────────────────
+
+def _pick_platform():
+    return _pick("Select platform:", list(_PLATFORMS))
+
+
+def _hangar_owner(platform, flags):
+    """Hangar needs the project owner whenever the slug alone is ambiguous."""
+    owner = _flag_str(flags, "owner")
+    if owner or platform != "hangar":
+        return owner
+    return _ask("Hangar project owner (blank if unambiguous)", default="") or None
+
+
+def _server_by_id(sid):
+    return next((s for s in _server_entries() if s["id"] == sid), None)
+
+
+def _wizard_search(kind, pos, flags):
+    """kind is 'plugins' or 'mods' — it only picks the Modrinth project type."""
+    platform = pos[0] if pos else _pick_platform()
+    if not platform:
+        return
+    if len(pos) > 1:
+        query = " ".join(pos[1:])
+    else:
+        query = _ask("Search query (blank = browse popular)", default="") or ""
+
+    sid = _flag_str(flags, "id")
+    software = _flag_str(flags, "software", "sw")
+    mc_version = _flag_str(flags, "v", "mc_version")
+    if sid and not software:
+        srv = _server_by_id(sid)
+        if srv:
+            software = srv.get("software")
+    if not software:
+        software = "fabric" if kind == "mods" else "paper"
+
+    from . import plugins
+    print(f"\n  Searching {platform} for {kind}…\n")
+    _pr(f"search-{kind}", plugins.search_plugins(types.SimpleNamespace(
+        platform=platform, query=query, id=sid, mc_version=mc_version,
+        software=software,
+        limit=_flag_int(flags, ("n", "limit"), 20),
+        offset=_flag_int(flags, ("o", "offset"), 0),
+    )))
+
+
+def _wizard_install(kind, pos, flags):
+    platform = pos[0] if pos else _pick_platform()
+    if not platform:
+        return
+    slug = pos[1] if len(pos) > 1 else _ask(f"{platform} {kind} slug or id")
+    if not slug:
+        return
+
+    profile_id = _flag_str(flags, "profile_id")
+    sid = _flag_str(flags, "id")
+    if not sid and not profile_id:
+        print()
+        sid = _pick_server(f"Select server to install the {kind} into:")
+
+    from . import plugins
+    print(f"\n  Installing {slug} from {platform}…")
+    _pr(f"install-{kind}", plugins.install_plugin(
+        types.SimpleNamespace(
+            platform=platform, slug=slug, id=sid, profile_id=profile_id,
+            mc_version=_flag_str(flags, "v", "mc_version"),
+            owner=_hangar_owner(platform, flags),
+            version=_flag_str(flags, "version"),
+        ),
+        progress=lambda p, s: print(f"\r  {s:<50}", end=""),
+    ))
+    print()
+
+
+def _wizard_plugin_info(pos, flags):
+    platform = pos[0] if pos else _pick_platform()
+    if not platform:
+        return
+    slug = pos[1] if len(pos) > 1 else _ask(f"{platform} plugin/mod slug or id")
+    if not slug:
+        return
+    from . import plugins
+    print()
+    _pr("info-plugin", plugins.get_plugin_info(types.SimpleNamespace(
+        platform=platform, slug=slug, owner=_hangar_owner(platform, flags),
+        limit=_flag_int(flags, ("n", "limit"), 25),
+        offset=_flag_int(flags, ("o", "offset"), 0),
+    )))
+
+
+# ── proxy (Velocity) wizards ──────────────────────────────────────────────────
+
+def _wizard_proxy(noun, flags):
+    from . import servers
+    vid = _flag_str(flags, "velocity_id")
+    if not vid:
+        print()
+        vid = _pick_server("Select Velocity proxy:", softwares={"velocity"},
+                           label="Velocity ")
+    if noun == "link":
+        sid = _flag_str(flags, "id")
+        if not sid:
+            sid = _pick_server("Select server to link into the proxy:",
+                               softwares=servers.PAPER_SOFTWARES,
+                               label="Paper-based ")
+        _pr("proxy-link", servers.link_to_proxy(types.SimpleNamespace(
+            id=sid, velocity_id=vid,
+            server_name=_flag_str(flags, "server_name"),
+            priority=_flag_int(flags, ("priority",)),
+            custom_ip=_flag_str(flags, "custom_ip"),
+        )))
+    else:
+        _pr("proxy-info", servers.proxy_info(types.SimpleNamespace(velocity_id=vid)))
+
+
 # ── shutdown ──────────────────────────────────────────────────────────────────
 
 def _shutdown_all():
@@ -697,17 +904,17 @@ def _execute(text):
     noun = (parts[1].lower()
             if len(parts) > 1 and not parts[1].startswith("-") else None)
     flag_parts = parts[2:] if noun else parts[1:]
-    flags = _parse_flags(flag_parts)
+    pos, flags = _split_args(flag_parts)
 
     try:
-        _dispatch(verb, noun, flags)
+        _dispatch(verb, noun, flags, pos)
     except KeyboardInterrupt:
         print(render.dim("\n  Cancelled."))
     except Exception as e:
         print(render.red(f"  Error: {e}"))
 
 
-def _dispatch(verb, noun, flags):
+def _dispatch(verb, noun, flags, pos=()):
     # ── meta ──────────────────────────────────────────────────────────────
     if verb in ("exit", "quit"):
         raise SystemExit(0)
@@ -786,6 +993,8 @@ def _dispatch(verb, noun, flags):
             pid = flags.get("id") or _pick("Select profile:", _profile_ids())
             from . import profiles
             _pr("fetch-profile", profiles.fetch_profile(types.SimpleNamespace(id=pid)))
+        elif noun == "plugin":
+            _wizard_plugin_info(list(pos), flags)
         return
 
     # ── create ────────────────────────────────────────────────────────────
@@ -950,6 +1159,35 @@ def _dispatch(verb, noun, flags):
             print(render.yellow(f"  Unknown: /backup {noun}  — use create|list|delete|restore"))
         return
 
+    # ── plugins / mods ────────────────────────────────────────────────────
+    # The kind noun is optional: `/search modrinth luckperms` reads the token
+    # that would have been the noun as the platform instead.
+    if verb == "search":
+        pos = list(pos)
+        if noun not in ("plugins", "mods"):
+            if noun:
+                pos.insert(0, noun)
+            noun = "plugins"
+        _wizard_search(noun, pos, flags)
+        return
+
+    if verb == "install":
+        pos = list(pos)
+        if noun not in ("plugin", "mod"):
+            if noun:
+                pos.insert(0, noun)
+            noun = "plugin"
+        _wizard_install(noun, pos, flags)
+        return
+
+    # ── proxy (Velocity) ──────────────────────────────────────────────────
+    if verb == "proxy":
+        if noun in ("info", "link", None):
+            _wizard_proxy(noun or "info", flags)
+        else:
+            print(render.yellow(f"  Unknown: /proxy {noun}  — use info|link"))
+        return
+
     # ── buildtools ────────────────────────────────────────────────────────
     if verb == "buildtools":
         from . import buildtools as _bt
@@ -1031,6 +1269,7 @@ def _help():
     print(f"""
 {B("  MCPanel CLI commands")}
   ─────────────────────────────────────────────────────────────────
+  {D("Every argument below is optional — leave it out and you get a picker or a prompt.")}
 
 {C("  Servers")}
   /create server           guided wizard (or pass flags to skip steps)
@@ -1046,11 +1285,24 @@ def _help():
   /delete server           delete server + files
   /ping server             server-list-ping
   /files server            file tree
-  /stats server            disk usage
+  /stats server            disk usage (+ CPU / RAM while running)
   /open server             open folder in file manager
   /accept-eula server      write eula=true
   /scan server -path <dir> detect port/software in a folder
   /import server           import an existing server folder
+
+{C("  Plugins & mods")}
+  /search plugins <platform> [query]   search modrinth | hangar | spigotmc
+  /search mods <platform> [query]      same, but Fabric mods
+  /install plugin <platform> <slug>    download into a server's plugins/
+  /install mod <platform> <slug>       …or mods/ on Fabric  (--profile-id installs into a profile)
+  /info plugin <platform> <slug>       version history + website link
+  {D("-id <server> filters results to that server's MC version · --owner for Hangar")}
+
+{C("  Proxy (Velocity)")}
+  /proxy info              servers registered in a Velocity proxy's velocity.toml
+  /proxy link              link a Paper-based server into a Velocity proxy
+  {D("--velocity-id <id> -id <id> [--server-name <n>] [--priority <n>] [--custom-ip <ip:port>]")}
 
 {C("  Backups")}
   /backup create -id <id>                create a backup zip
@@ -1071,13 +1323,14 @@ def _help():
   /version                   MCPanel CLI version
   /check-update              check for a newer release
   /buildtools version        show installed / latest BuildTools build
-  /buildtools update          force BuildTools.jar to update now
+  /buildtools update         force BuildTools.jar to update now
   /discover                  re-scan the servers directory for unregistered servers
 
 {C("  General")}
   /config show | path      raw config / data-directory paths
-  Tab                      complete commands, IDs, software names, flags
+  Tab                      complete commands, IDs, software + platform names, flags
   ↑ ↓                      command history
+  bottom bar               live usage hint for the command you're typing
   /help                    this message
   /exit  or  Ctrl-D        leave the TUI
   /shutdown                kill all running servers + exit

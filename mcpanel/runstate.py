@@ -84,7 +84,8 @@ def is_running(server_id):
 
 
 def cleanup_state(server_id):
-    for p in (state_path(server_id), sock_path(server_id), port_path(server_id)):
+    cpu_sample = os.path.join(paths.RUN_DIR, server_id + ".cpu")
+    for p in (state_path(server_id), sock_path(server_id), port_path(server_id), cpu_sample):
         try:
             os.remove(p)
         except OSError:

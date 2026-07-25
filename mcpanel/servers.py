@@ -366,7 +366,14 @@ def start_server(args, progress=None):
         if err:
             return {"error": err}
 
-        return _spawn_supervisor(srv["id"])
+        result = _spawn_supervisor(srv["id"])
+        if result.get("success"):
+            idx = next((i for i, s in enumerate(cfg.get("servers", [])) if s["id"] == srv["id"]), -1)
+            if idx != -1:
+                cfg["servers"][idx]["lastBoot"] = _now_ms()
+                save_config(cfg)
+                write_server_manifest(cfg["servers"][idx])
+        return result
     except Exception as e:
         return {"error": str(e)}
 
@@ -460,6 +467,88 @@ def ping(args, progress=None):
     return ping_server(host, int(port))
 
 
+def _cpu_sample_path(server_id):
+    return os.path.join(paths.RUN_DIR, server_id + ".cpu")
+
+
+def _read_proc_cpu_seconds(pid):
+    """Total CPU time (user+kernel) consumed by `pid`, in seconds.
+
+    Returns None if the process can't be read. Cross-platform: /proc on POSIX,
+    GetProcessTimes on Windows.
+    """
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+            if not handle:
+                return None
+            creation = wintypes.FILETIME()
+            exit_t = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            ok = ctypes.windll.kernel32.GetProcessTimes(
+                handle, ctypes.byref(creation), ctypes.byref(exit_t),
+                ctypes.byref(kernel), ctypes.byref(user))
+            ctypes.windll.kernel32.CloseHandle(handle)
+            if not ok:
+                return None
+            def _ticks(ft):
+                return (ft.dwHighDateTime << 32) | ft.dwLowDateTime
+            # FILETIME is in 100-nanosecond units.
+            return (_ticks(kernel) + _ticks(user)) / 1e7
+        except Exception:
+            return None
+    try:
+        with open(f"/proc/{pid}/stat", "r") as f:
+            data = f.read()
+        # comm (field 2) may contain spaces/parens, so split on the last ')'.
+        after = data.rpartition(")")[2].split()
+        # After the ')', field indices shift by 3: utime is field 14, stime 15.
+        utime = int(after[11])
+        stime = int(after[12])
+        clk = os.sysconf("SC_CLK_TCK") or 100
+        return (utime + stime) / clk
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _server_cpu_pct(server_id, pid):
+    """Percent of total machine CPU used by `pid` since the previous call.
+
+    A CLI run is one-shot, so the prior sample (pid, cpu-seconds, wall-clock)
+    is cached in run/<id>.cpu and the delta is computed against it. Normalised
+    by logical CPU count so it stays within 0..100, matching the system gauge.
+    Returns 0.0 on the first sample (no baseline yet).
+    """
+    proc_seconds = _read_proc_cpu_seconds(pid)
+    if proc_seconds is None:
+        return None
+    now = time.time()
+    pct = 0.0
+    sample_path = _cpu_sample_path(server_id)
+    try:
+        with open(sample_path, "r") as f:
+            prev_pid, prev_secs, prev_wall = f.read().split()
+        if int(prev_pid) == int(pid):
+            dt = now - float(prev_wall)
+            if dt > 0:
+                ncpu = os.cpu_count() or 1
+                pct = (proc_seconds - float(prev_secs)) / dt * 100.0 / ncpu
+                pct = max(0.0, min(100.0, pct))
+    except (OSError, ValueError):
+        pass
+    try:
+        with open(sample_path, "w") as f:
+            f.write(f"{pid} {proc_seconds} {now}")
+    except OSError:
+        pass
+    return round(pct, 1)
+
+
 def get_server_dir_stats(args, progress=None):
     cfg = load_config()
     srv = find_server(cfg, args.id)
@@ -470,6 +559,9 @@ def get_server_dir_stats(args, progress=None):
     if st:
         pid = st.get("javaPid")
         if pid:
+            cpu = _server_cpu_pct(srv["id"], pid)
+            if cpu is not None:
+                result["cpuPct"] = cpu
             if sys.platform == "win32":
                 try:
                     import ctypes

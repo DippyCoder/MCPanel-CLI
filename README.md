@@ -72,15 +72,20 @@ mcpanel › /create server
 ```
 
 - **Commands start with `/`** - `/create server`, `/list servers`, `/start server`, …
-- **Tab completion** - completes command names, nouns, flag names, server IDs, and software names, with a usage hint shown inline for each match
+- **Tab completion** - completes command names, nouns, flag names, server IDs, software names, and plugin platforms, with a usage hint shown inline for each match
 - **Live usage tooltip** - the bottom toolbar updates as you type, showing the full syntax for the current command
 - **Guided wizards** - enter a command without arguments and you get prompted for each one interactively (name, software picker, version picker, RAM, port, EULA)
-- **Arrow-key pickers** - selecting a server, software, or version shows a scrollable inline list; ↑↓ to navigate, Enter to confirm, Esc to cancel
+- **Arrow-key pickers** - selecting a server, software, version, platform, or backup shows a scrollable inline list; ↑↓ to navigate, Enter to confirm, Esc to cancel
 - **Command history** - ↑↓ recalls previous commands
 - **`/exit`** - leave the TUI and return to the terminal (servers keep running in the background)
 - **`/shutdown`** - kill all running servers then exit
+- **`/search plugins|mods`, `/install plugin|mod`, `/info plugin`** - browse Modrinth / Hangar / SpigotMC and install without leaving the TUI; omit the platform or the target server and you get a picker. The `plugins`/`mods` word is optional, so `/search modrinth luckperms` works too
+- **`/proxy info|link`** - inspect or extend a Velocity proxy; the proxy list is filtered to Velocity servers and the link list to Paper-based ones
 - **`/backup create|list|delete|restore`** and **`/buildtools version|update`** - same features as the command-line, with guided pickers for server/backup selection
 - **`/discover`** - re-scan `servers/` for folders dropped in since the TUI started (the one-shot CLI already does this on every startup)
+
+Every command in the reference below is available inside the TUI except the
+scripting-oriented ones (`fetch`, `api`, `completion`, `debug`).
 
 ```
 mcpanel › /create server
@@ -90,6 +95,19 @@ mcpanel › /create server
     velocity
     ...
   ↑↓ navigate   Enter select   Esc cancel
+```
+
+```
+mcpanel › /search plugins modrinth luckperms
+NAME                         AUTHOR             DOWNLOADS   UPDATED      VERSION
+LuckPerms                    lucko              2.3M        2026-06-18   MBSY8toc
+  A permissions plugin/mod for Minecraft servers.
+
+Install: /install plugin <platform> <slug> -id <serverid>
+
+mcpanel › /install plugin modrinth luckperms
+  Select server to install the plugin into:
+  ❯ srv_1700000000000  survival
 ```
 
 Type `/help` inside the TUI for the full command list.
@@ -141,7 +159,7 @@ mcpanel stop server -id srv_1700000000000
 | `sessions server -id <id>` | List archived log sessions |
 | `ping server -id <id>` (or `-host <h> -port <p>`) | Server-list-ping |
 | `files server -id <id>` | File tree |
-| `stats server -id <id>` | Disk usage |
+| `stats server -id <id>` | Disk usage, plus the running server's CPU % and RAM |
 | `accept-eula server -id <id>` | Write `eula=true` |
 | `scan server -path <folder>` | Detect port/software before importing |
 | `open server -id <id>` | Open folder in file manager |
@@ -249,6 +267,7 @@ mcpanel api fetch versions -sw paper        # { "versions": [...] }
 mcpanel api fetch log     -id srv_123       # [{time,text,type}, ...]
 mcpanel api fetch status  -id srv_123       # true / false
 mcpanel api ping server   -id srv_123       # { online, players, ... }
+mcpanel api fetch stats   -id srv_123       # { size, ramBytes, cpuPct }
 mcpanel api create server -t x -sw paper -v 1.21.1   # { success, server }
 mcpanel api system                          # { totalRam, availableStorage }
 mcpanel api search plugins modrinth luckperms -id srv_123   # { results, hasMore }
@@ -300,5 +319,6 @@ mcpanel/
 - **Spigot** is compiled locally via [BuildTools](https://www.spigotmc.org/wiki/buildtools/), which the CLI downloads and runs automatically on first use - this requires a full JDK (not a JRE-only install) in the version BuildTools expects for that Minecraft version; run `mcpanel fetch jdk-compat -sw spigot -v <version>` to check first.
 - **Fabric** downloads the server-side loader JAR from FabricMC.
 - Match your Java version to the Minecraft version (1.20.5+ needs Java 21) - `detect-jdk` and `fetch jdk-compat` both report this per-JDK now.
+- `stats` reads CPU straight from the OS (`/proc/<pid>/stat`, `GetProcessTimes` on Windows) and reports it as a share of the whole machine. A CLI invocation is one-shot, so the figure is the delta since the previous `stats` call for that server (cached in `run/<id>.cpu`) - the first call after a start therefore reports 0%.
 - The JSON shapes from `api` mirror the original Electron IPC return values 1:1.
 - The interactive TUI requires `prompt_toolkit` (installed automatically via pip). On terminals without ANSI support the TUI degrades gracefully to plain text.

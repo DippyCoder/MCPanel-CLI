@@ -22,6 +22,7 @@ Fail-safe contract:
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -275,10 +276,17 @@ def build_spigot(version, server_dir, progress=None, java_path=None):
         if progress:
             progress(5, f"Building Spigot {version} with BuildTools (this can take a while)…")
 
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            # This CLI process is itself launched with CREATE_NO_WINDOW by the desktop
+            # app, so it has no console. Spawning java.exe (console-subsystem) without
+            # this flag would make Windows allocate it a brand-new console window.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
             proc = subprocess.Popen(
                 cmd, cwd=work_dir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, bufsize=1, env=_build_env(java),
+                text=True, bufsize=1, env=_build_env(java), **popen_kwargs,
             )
         except OSError as e:
             return {"error": f"Failed to launch '{java}': {e}"}

@@ -147,6 +147,11 @@ def render_status(result, args):
 
 def render_stats(result, args):
     print(f"{util.human_size(result.get('size', 0))}  ({result.get('size', 0)} bytes)")
+    # Only present while the server is running (read from the java process).
+    if result.get("ramBytes") is not None:
+        print(dim("RAM  ") + util.human_size(result["ramBytes"]))
+    if result.get("cpuPct") is not None:
+        print(dim("CPU  ") + f"{result['cpuPct']}%")
 
 
 def _print_tree(items, indent=0):
@@ -364,7 +369,7 @@ def render_shutdown(result, args):
 
 
 # ─── plugin / mod renderers ──────────────────────────────────────────────────
-def render_plugin_search(result, args):
+def render_plugin_search(result, args, kind="plugin"):
     if _err(result):
         return
     items = result.get("results", [])
@@ -386,7 +391,9 @@ def render_plugin_search(result, args):
             print(dim("  " + r["description"][:80]))
         if r.get("external") and r.get("externalUrl"):
             print(dim(f"  hosted externally — can't auto-install: {r['externalUrl']}"))
-    print(dim(f"\nInstall: mcpanel install plugin <platform> <slug> --id <serverid>"))
+    # Inside the TUI the same command is spelled /install, not mcpanel install.
+    prefix = "/" if getattr(args, "tui", False) else "mcpanel "
+    print(dim(f"\nInstall: {prefix}install {kind} <platform> <slug> -id <serverid>"))
 
 
 def render_install_plugin(result, args):
@@ -413,6 +420,29 @@ def render_plugin_info(result, args):
         print(dim("(more versions available — increase -n or use -o to page)"))
     if result.get("websiteUrl"):
         print(dim(f"\nWebsite: {result['websiteUrl']}"))
+
+
+# ─── proxy (Velocity) ─────────────────────────────────────────────────────────
+def render_proxy_info(result, args):
+    if _err(result):
+        return
+    registered = result.get("servers", {})
+    if not registered:
+        print(dim("No servers registered in this proxy's velocity.toml."))
+        return
+    try_list = result.get("tryList", [])
+    print(bold(f"{'NAME':<24} ADDRESS"))
+    for name, addr in registered.items():
+        print(f"  {name:<24} {addr}")
+    if try_list:
+        print(dim(f"\ntry: {', '.join(try_list)}"))
+
+
+def render_proxy_link(result, args):
+    if _err(result):
+        return
+    print(green("✓ ") + f"Linked as {bold(result.get('serverName', '?'))} "
+          + dim(f"→ {result.get('address', '')}"))
 
 
 def render_completion(result, args):
@@ -491,11 +521,13 @@ RENDERERS = {
     "debug-first-start": render_success,
     "shutdown": render_shutdown,
     "discover": render_discover,
-    "search-plugins": render_plugin_search,
-    "search-mods": render_plugin_search,
+    "search-plugins": lambda r, a: render_plugin_search(r, a, "plugin"),
+    "search-mods": lambda r, a: render_plugin_search(r, a, "mod"),
     "install-plugin": render_install_plugin,
     "install-mod": render_install_plugin,
     "info-plugin": render_plugin_info,
+    "proxy-info": render_proxy_info,
+    "proxy-link": render_proxy_link,
     "completion-bash": render_completion,
     "completion-zsh": render_completion,
     "backup-create": render_backup_create,

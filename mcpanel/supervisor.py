@@ -108,6 +108,7 @@ class Supervisor:
     # ─── lifecycle ────────────────────────────────────────────────────────
     def run(self):
         import subprocess
+        import sys
 
         paths.ensure_dirs()
         cfg = load_config()
@@ -124,10 +125,19 @@ class Supervisor:
         runstate.rotate_log(self.id)
         self.log_file = open(runstate.log_path(self.id), "w", encoding="utf-8")
 
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            # This supervisor itself is launched with DETACHED_PROCESS (see
+            # servers.py's _spawn_supervisor), so it has no console of its own. Spawning
+            # java.exe (a console-subsystem binary) without CREATE_NO_WINDOW makes
+            # Windows allocate it a brand-new console window, even with stdio piped.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         try:
             self.proc = subprocess.Popen(
                 cmd, cwd=srv["dir"],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                **popen_kwargs,
             )
         except Exception as e:
             self._boot_fail(f"Failed to launch java: {e}")

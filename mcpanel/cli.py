@@ -121,7 +121,7 @@ _mcpanel_complete() {
   fi
 
   # platforms
-  if [[ "$words" =~ (install|search).*(plugin|mod|plugins|mods)[[:space:]] ]] && [[ "$prev" =~ (plugin|mod|plugins|mods) ]]; then
+  if [[ "$words" =~ (install|search|info).*(plugin|mod|plugins|mods)[[:space:]] ]] && [[ "$prev" =~ (plugin|mod|plugins|mods) ]]; then
     COMPREPLY=($(compgen -W "modrinth hangar spigotmc" -- "$cur"))
     return
   fi
@@ -134,7 +134,7 @@ _mcpanel_complete() {
 
   # top-level commands
   if [[ $COMP_CWORD -eq 1 ]]; then
-    local cmds="create list info fetch delete update start stop restart kill cmd logs sessions console ping duplicate files stats accept-eula import proxy scan open versions detect-jdk system version check-update config shutdown discover search install completion backup buildtools api cli debug"
+    local cmds="create list ls info fetch delete rm update start stop restart kill cmd logs sessions console ping duplicate clone files stats accept-eula import proxy scan open versions detect-jdk jdk system version check-update config shutdown discover search install completion backup buildtools api cli debug"
     COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
     return
   fi
@@ -144,7 +144,10 @@ _mcpanel_complete() {
   case "$verb" in
     create)   COMPREPLY=($(compgen -W "server profile profile-from-server" -- "$cur")) ;;
     list|ls)  COMPREPLY=($(compgen -W "servers profiles" -- "$cur")) ;;
-    info|fetch|delete|rm) COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    info)     COMPREPLY=($(compgen -W "server profile plugin" -- "$cur")) ;;
+    fetch)    COMPREPLY=($(compgen -W "server profile config log files stats status system update jdk jdk-compat buildtools versions" -- "$cur")) ;;
+    delete|rm) COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
+    backup)   COMPREPLY=($(compgen -W "create list delete restore" -- "$cur")) ;;
     import)   COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
     open)     COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
     scan)     COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
@@ -191,16 +194,28 @@ _mcpanel() {
         'console:attach to live console'
         'ping:ping a server'
         'files:show file tree'
-        'stats:show disk usage'
+        'stats:show disk usage, plus CPU/RAM while running'
+        'sessions:list archived log sessions'
+        'accept-eula:accept the Minecraft EULA for a server'
+        'duplicate:duplicate a server'
         'import:import a server or profile'
+        'scan:inspect a folder before importing'
+        'open:open a server or profile folder'
         'versions:list available versions'
         'search:search for plugins or mods'
         'install:install a plugin or mod'
+        'proxy:Velocity proxy info / link'
+        'backup:create, list, restore or delete backups'
         'completion:output shell completion script'
         'buildtools:SpigotMC BuildTools version / update'
         'discover:re-scan the servers directory for unregistered servers'
+        'detect-jdk:find installed Java runtimes'
         'system:show system info'
         'version:show CLI version'
+        'check-update:check for a newer MCPanel release'
+        'config:show config / data paths'
+        'shutdown:kill all running servers'
+        'cli:interactive terminal GUI'
         'api:raw JSON output mode'
       )
       _describe 'command' cmds
@@ -221,10 +236,29 @@ _mcpanel() {
             _values 'platform' 'modrinth' 'hangar' 'spigotmc'
           fi
           ;;
+        info)
+          if [[ ${#words} -eq 3 ]]; then
+            _values 'type' 'server' 'profile' 'plugin'
+          elif [[ ${#words} -eq 4 && ${words[3]} == plugin ]]; then
+            _values 'platform' 'modrinth' 'hangar' 'spigotmc'
+          fi
+          ;;
         create)
           _values 'type' 'server' 'profile' 'profile-from-server' ;;
         list|ls)
           _values 'type' 'servers' 'profiles' ;;
+        fetch)
+          _values 'type' 'server' 'profile' 'config' 'log' 'files' 'stats' 'status' 'system' 'update' 'jdk' 'jdk-compat' 'buildtools' 'versions' ;;
+        delete|rm|import|scan|open)
+          _values 'type' 'server' 'profile' ;;
+        proxy)
+          _values 'type' 'info' 'link' ;;
+        backup)
+          _values 'action' 'create' 'list' 'delete' 'restore' ;;
+        buildtools)
+          _values 'action' 'version' 'update' ;;
+        config)
+          _values 'type' 'show' 'path' ;;
         completion)
           _values 'shell' 'bash' 'zsh' ;;
       esac
@@ -411,7 +445,7 @@ def add_commands(sub):
     noun(p); f_id(p)
     p.set_defaults(func=servers.get_server_file_tree, action="file-tree")
 
-    p = sub.add_parser("stats", help="show a server's disk usage")
+    p = sub.add_parser("stats", help="show a server's disk usage (+ CPU/RAM while running)")
     noun(p); f_id(p)
     p.set_defaults(func=servers.get_server_dir_stats, action="stats")
 

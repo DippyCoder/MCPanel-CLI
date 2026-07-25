@@ -82,8 +82,15 @@ def detect_jdk():
         rp = os.path.realpath(p) if os.path.exists(p) else p
         if rp in seen:
             continue
+        popen_kwargs = {}
+        if sys.platform == "win32":
+            # This CLI process is itself launched with CREATE_NO_WINDOW by the desktop
+            # app, so it has no console. Spawning java.exe (console-subsystem) without
+            # this flag would make Windows allocate it a brand-new console window,
+            # visible as a brief flash every time the JDK list is refreshed.
+            popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
         try:
-            out = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=10)
+            out = subprocess.run([p, "-version"], capture_output=True, text=True, timeout=10, **popen_kwargs)
         except Exception:
             continue
         if out.returncode == 0:
