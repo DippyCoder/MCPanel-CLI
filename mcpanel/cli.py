@@ -15,6 +15,7 @@ import sys
 import time
 
 from . import paths, servers, profiles, system, versions, runstate, render, plugins, backup, buildtools, config
+from . import addons
 from . import __version__
 
 
@@ -63,6 +64,8 @@ def _config_path(args=None, progress=None):
         "profiles": paths.PROFILES_DIR,
         "themes": paths.THEMES_DIR,
         "run": paths.RUN_DIR,
+        "addons": paths.ADDONS_DIR,
+        "addonData": paths.ADDON_DATA_DIR,
     }
 
 
@@ -608,6 +611,28 @@ def add_commands(sub):
     leaf(dbgsub, "first_start", _debug_first_start, "debug-first-start",
          help="force the first-start UI to show on the next MCPanel launch")
 
+    # addons -------------------------------------------------------------
+    adn = sub.add_parser("addons", help="manage MCPanel-CLI addons")
+    adnsub = adn.add_subparsers(dest="noun", metavar="<command>", required=True)
+    leaf(adnsub, "list", addons.cmd_list, "addons-list",
+         help="list discovered addons with their source and status")
+    p = leaf(adnsub, "info", addons.cmd_info, "addons-info",
+             help="show one addon's metadata (and its traceback, if it failed)")
+    p.add_argument("name", metavar="<name>")
+    p = leaf(adnsub, "enable", addons.cmd_enable, "addons-enable", help="enable an addon")
+    p.add_argument("name", metavar="<name>")
+    p = leaf(adnsub, "disable", addons.cmd_disable, "addons-disable", help="disable an addon")
+    p.add_argument("name", metavar="<name>")
+    p = leaf(adnsub, "install", addons.cmd_install, "addons-install", progress_ok=True,
+             help="install an addon from a .py file, directory, .zip or https:// URL")
+    p.add_argument("source", metavar="<path|url>")
+    p = leaf(adnsub, "remove", addons.cmd_remove, "addons-remove",
+             help="remove a user-installed addon")
+    p.add_argument("name", metavar="<name>")
+
+    # Addon-provided commands mount last, so `--help` lists the built-ins first.
+    addons.register_all(sub)
+
 
 def build_parser():
     parser = argparse.ArgumentParser(
@@ -699,6 +724,11 @@ def main(argv=None):
         _last_discovery = config.discover_servers()
     except Exception:
         _last_discovery = []
+
+    # Addons were imported while the parser tree was built; this is where they
+    # get to do real startup work (open a database, seed defaults, …). A hook
+    # that raises disables that addon rather than the CLI.
+    addons.run_startup_hooks()
 
     if not hasattr(args, "func"):
         # bare `mcpanel` or `mcpanel <verb>` with no subcommand

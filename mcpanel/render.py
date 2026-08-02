@@ -473,6 +473,106 @@ def render_backup_create(result, args):
 
 
 # ─── dispatch table ──────────────────────────────────────────────────────────
+# ─── addons ──────────────────────────────────────────────────────────────────
+_ADDON_STATUS_STYLE = {
+    "loaded": lambda: green("● loaded"),
+    "disabled": lambda: dim("○ disabled"),
+    "error": lambda: red("✗ error"),
+    "api-mismatch": lambda: yellow("! api mismatch"),
+    "invalid": lambda: yellow("! invalid"),
+    "duplicate": lambda: yellow("! duplicate"),
+}
+_ADDON_STATUS_RAW = {
+    "loaded": "● loaded", "disabled": "○ disabled", "error": "✗ error",
+    "api-mismatch": "! api mismatch", "invalid": "! invalid", "duplicate": "! duplicate",
+}
+
+
+def render_addons_list(result, args):
+    if _err(result):
+        return
+    if not result.get("loaded", True):
+        print(yellow("! ") + result.get("reason", "addons are disabled"))
+        return
+    items = result.get("addons", [])
+    if not items:
+        print(dim("No addons installed. See ADDONS.md, or: mcpanel addons install <path|url>"))
+        return
+    print(bold(f"{'NAME':<20} {'VERSION':<10} {'SOURCE':<9} {'STATUS':<15} DESCRIPTION"))
+    for a in items:
+        status = a.get("status", "")
+        shown = _ADDON_STATUS_STYLE.get(status, lambda: status)()
+        raw = _ADDON_STATUS_RAW.get(status, status)
+        pad = " " * max(0, 15 - len(raw))
+        print(f"{a.get('name', ''):<20} {a.get('version', ''):<10} "
+              f"{a.get('source', ''):<9} {shown}{pad} {a.get('description', '')}")
+    broken = [a for a in items if a.get("error")]
+    if broken:
+        print()
+        print(dim("Run 'mcpanel addons info <name>' to see why an addon failed."))
+
+
+def render_addons_info(result, args):
+    if _err(result):
+        return
+    a = result.get("addon", {})
+    status = a.get("status", "")
+    print(bold(a.get("name", "")) + dim(f"  v{a.get('version', '?')}"))
+    if a.get("description"):
+        print("  " + a["description"])
+    print()
+    rows = [
+        ("status", _ADDON_STATUS_STYLE.get(status, lambda: status)()),
+        ("source", a.get("source", "")),
+        ("location", a.get("location", "")),
+        ("api version", str(a.get("apiVersion", ""))),
+        ("author", a.get("author", "") or dim("—")),
+        ("url", a.get("url", "") or dim("—")),
+    ]
+    if a.get("declaredName"):
+        rows.append(("declared name", yellow(a["declaredName"]) + dim("  (differs from install name)")))
+    for key, value in rows:
+        print(f"  {dim(key.ljust(12))}  {value}")
+    actions = a.get("actions", [])
+    if actions:
+        print()
+        print(bold("commands"))
+        for act in actions:
+            print(f"  • {act}")
+    if a.get("error"):
+        print()
+        print(red("error"))
+        for line in str(a["error"]).rstrip().splitlines():
+            print("  " + dim(line))
+
+
+def render_addons_toggle(result, args):
+    if _err(result):
+        return
+    verb = "Enabled" if result.get("enabled") else "Disabled"
+    print(green("✓ ") + f"{verb} addon {bold(result.get('name', ''))}")
+    if result.get("note"):
+        print(dim("  " + result["note"]))
+
+
+def render_addons_install(result, args):
+    if _err(result):
+        return
+    a = result.get("addon") or {}
+    print(green("✓ ") + "Installed addon " + bold(result.get("name", "")))
+    if a and a.get("status") != "loaded":
+        print(yellow("! ") + f"but it did not load ({a.get('status')}) — "
+              f"run: mcpanel addons info {result.get('name', '')}")
+
+
+def render_addons_remove(result, args):
+    if _err(result):
+        return
+    print(green("✓ ") + "Removed addon " + bold(result.get("name", "")))
+    print(dim("  " + str(result.get("removed", ""))))
+    print(dim("  Its data in addon-data/ was left untouched."))
+
+
 RENDERERS = {
     "list-servers": render_list_servers,
     "fetch-server": render_server,
@@ -536,10 +636,73 @@ RENDERERS = {
     "backup-restore": render_success,
     "buildtools-version": render_buildtools_version,
     "buildtools-update": render_buildtools_version,
+    "addons-list": render_addons_list,
+    "addons-info": render_addons_info,
+    "addons-enable": render_addons_toggle,
+    "addons-disable": render_addons_toggle,
+    "addons-install": render_addons_install,
+    "addons-remove": render_addons_remove,
 }
+
+
+# ─── addon renderers ─────────────────────────────────────────────────────────
+# Populated by mcpanel.addons.AddonAPI. ADDON_ACTIONS tracks every action an
+# addon mounted, so an addon command with no renderer of its own falls back to
+# render_generic rather than to the raw-JSON dump built-ins use — without
+# changing what any built-in prints.
+ADDON_RENDERERS = {}
+ADDON_ACTIONS = set()
+
+
+def render_generic(result, args):
+    """Readable default for addon results: flat scalars as a key/value block,
+    lists of dicts as a table, anything deeper as indented JSON."""
+    if _err(result):
+        return
+    if not isinstance(result, dict):
+        print(result)
+        return
+
+    scalars, complex_ = [], []
+    for key, value in result.items():
+        (scalars if isinstance(value, (str, int, float, bool, type(None))) else complex_).append((key, value))
+
+    if scalars:
+        width = max(len(k) for k, _ in scalars)
+        for key, value in scalars:
+            if isinstance(value, bool):
+                shown = green("yes") if value else dim("no")
+            elif value is None or value == "":
+                shown = dim("—")
+            else:
+                shown = str(value)
+            print(f"  {dim(key.ljust(width))}  {shown}")
+
+    for key, value in complex_:
+        print()
+        print(bold(key))
+        if isinstance(value, list) and value and all(isinstance(v, dict) for v in value):
+            cols = list(value[0].keys())
+            widths = {c: max(len(str(c)), *(len(str(row.get(c, ""))) for row in value)) for c in cols}
+            print("  " + dim("  ".join(str(c).upper().ljust(widths[c]) for c in cols)))
+            for row in value:
+                print("  " + "  ".join(str(row.get(c, "")).ljust(widths[c]) for c in cols))
+        elif isinstance(value, list) and all(not isinstance(v, (dict, list)) for v in value):
+            if not value:
+                print("  " + dim("(none)"))
+            for item in value:
+                print(f"  • {item}")
+        else:
+            import json
+            for line in json.dumps(value, indent=2, default=str).splitlines():
+                print("  " + line)
 
 
 # ─── dispatch ────────────────────────────────────────────────────────────────
 def render(action, result, args):
-    fn = RENDERERS.get(action, render_config)
+    fn = ADDON_RENDERERS.get(action)
+    if fn is None and action in ADDON_ACTIONS:
+        fn = render_generic
+    if fn is None:
+        fn = RENDERERS.get(action, render_config)
     fn(result, args)

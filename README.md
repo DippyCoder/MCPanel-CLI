@@ -279,6 +279,60 @@ Errors come back as `{"error": "..."}` with a non-zero exit code.
 
 ---
 
+## Addons
+
+Addons add new command groups to the CLI. Because the CLI *is* MCPanel's backend, an addon that adds `mcpanel api foo bar` is immediately callable from the desktop app and the WebUI too - there's no second integration to write.
+
+| Command | What it does |
+|---------|--------------|
+| `addons list` | List discovered addons with their source and status |
+| `addons info <name>` | One addon's metadata (and its traceback, if it failed to load) |
+| `addons enable <name>` / `addons disable <name>` | Toggle an addon; disabling never deletes anything |
+| `addons install <path\|url>` | Install from a `.py` file, a directory, a `.zip`, or an `https://` URL |
+| `addons remove <name>` | Remove a user-installed addon (bundled and pip-installed ones are refused) |
+
+Addons are discovered from three places, in this order - first wins on a name clash:
+
+| Source | Location |
+|--------|----------|
+| **bundled** | ships inside the CLI (`accounts` is one) - enabled by default |
+| **pip** | any installed distribution exposing the `mcpanel.addons` entry-point group |
+| **user** | `<data dir>/addons/<name>.py` or `<data dir>/addons/<name>/__init__.py` |
+
+A broken addon is skipped and reported by `addons list` - it never stops the CLI from starting. `MCPANEL_NO_ADDONS=1` disables addon loading entirely, as an escape hatch.
+
+Addons are **not** sandboxed: an addon can do anything the user running `mcpanel` can. Install addons you trust.
+
+Writing one is documented in **[ADDONS.md](ADDONS.md)**.
+
+---
+
+## Accounts & permissions
+
+The bundled **`accounts`** addon gives MCPanel a real multi-user layer - named accounts, PBKDF2-hashed passwords, session tokens, roles, and a per-permission access model - stored in SQLite at `<data dir>/addon-data/accounts/accounts.db`. It's what [MCPanel-WebUI](https://github.com/DippyCoder/MCPanel-WebUI) authenticates against, so the CLI and the panel share one user database.
+
+> **The default login is `admin` / `admin`.** Change it before the panel is reachable from anywhere but localhost:
+> ```bash
+> mcpanel accounts passwd -u admin -p "a real password"
+> ```
+
+```bash
+mcpanel accounts list                                       # who exists
+mcpanel accounts create -u steve -p "…" -r operator         # add an operator
+mcpanel accounts update -u steve --disable                  # lock without deleting
+mcpanel accounts perms                                      # every permission, by area
+mcpanel accounts roles list                                 # admin / operator / viewer
+mcpanel accounts settings --set allow_self_password_change=false
+```
+
+Permissions are `<area>.<action>` strings (`servers.start`, `files.write`, …). An account's effective set is the union of its **role** and its own **extra permissions**. Three roles ship builtin: `admin` (everything), `operator` (run and maintain servers), `viewer` (read-only). `terminal.access` and `cli.raw` are excluded from both non-admin roles on purpose - both amount to root on the host.
+
+The last enabled account holding `accounts.manage` can't be deleted, disabled or demoted, so an install can't lock itself out.
+
+Full reference: **[mcpanel/bundled_addons/accounts/README.md](mcpanel/bundled_addons/accounts/README.md)**.
+
+---
+
 ## How running servers work
 
 A CLI invocation is short-lived, so each running server is owned by a detached
@@ -307,6 +361,9 @@ mcpanel/
 ├── ping.py         ← Minecraft server-list-ping
 ├── system.py       ← JDK detection (+ compatibility ranges), system info, update check
 ├── render.py       ← human-readable output + ANSI helpers
+├── addons.py       ← addon discovery, loading and the `addons` command group
+├── bundled_addons/ ← addons that ship with the CLI
+│   └── accounts/   ← user accounts, roles and permissions (SQLite)
 └── http.py · util.py · config.py · paths.py
 ```
 

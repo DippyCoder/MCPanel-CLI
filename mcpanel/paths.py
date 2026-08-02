@@ -12,6 +12,9 @@ and themes are interchangeable between the CLI and the Electron app. Electron's
     ├── servers/<id>/         ← each server's working directory (shared)
     ├── profiles/<id>/        ← server presets (shared)
     ├── themes/<id>/          ← installed themes (shared)
+    ├── addons/<name>/        ← user-installed addons (CLI-only)
+    ├── addon-data/<name>/    ← an addon's own database / cache (CLI-only)
+    ├── addons.json           ← which addons are disabled (CLI-only)
     └── run/                  ← runtime state for running servers (CLI-only;
                                 ignored by the Electron app)
 
@@ -49,7 +52,15 @@ THEMES_DIR = os.path.join(USER_DATA, "themes")
 RUN_DIR = os.path.join(USER_DATA, "run")
 CONFIG_FILE = os.path.join(USER_DATA, "config.json")
 
+# Addons: user-installed code lives in ADDONS_DIR, each addon's own persistent
+# state under ADDON_DATA_DIR/<name>. Kept apart so uninstalling an addon never
+# silently takes its data with it.
+ADDONS_DIR = os.path.join(USER_DATA, "addons")
+ADDON_DATA_DIR = os.path.join(USER_DATA, "addon-data")
+ADDONS_STATE_FILE = os.path.join(USER_DATA, "addons.json")
+
 
 def ensure_dirs():
-    for d in (SERVERS_DIR, PROFILES_DIR, THEMES_DIR, RUN_DIR):
+    for d in (SERVERS_DIR, PROFILES_DIR, THEMES_DIR, RUN_DIR,
+              ADDONS_DIR, ADDON_DATA_DIR):
         os.makedirs(d, exist_ok=True)
