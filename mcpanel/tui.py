@@ -635,7 +635,13 @@ def _wizard_start(flags, restart=False):
     ns = types.SimpleNamespace(id=sid, accept_eula=accept)
     fn = servers.restart_server if restart else servers.start_server
     action = "restart-server" if restart else "start-server"
-    _pr(action, fn(ns))
+    result = fn(ns)
+    _pr(action, result)
+
+    ok = isinstance(result, dict) and not result.get("error") and not result.get("needsEula")
+    if ok and _confirm("\n  Open console?", default=True):
+        from .cli import _follow_logs
+        _follow_logs(sid)
 
 
 def _wizard_stop_kill(flags, kill=False):

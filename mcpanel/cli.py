@@ -661,44 +661,8 @@ def build_parser():
 
 # ─── log following (human `console` / `logs -f`) ─────────────────────────────
 def _follow_logs(server_id):
-    path = runstate.log_path(server_id)
-    print(render.dim(f"— attaching to {server_id} (Ctrl-C to detach) —"))
-    pos = 0
-    try:
-        while True:
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    f.seek(pos)
-                    for line in f:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                            text = rec.get("text", "")
-                            print(render.red(text) if rec.get("type") == "err" else text)
-                        except Exception:
-                            print(line)
-                    pos = f.tell()
-            except FileNotFoundError:
-                pass
-            if not runstate.is_running(server_id):
-                # drain any final bytes then stop
-                time.sleep(0.3)
-                with open(path, "r", encoding="utf-8") as f:
-                    f.seek(pos)
-                    rest = f.read()
-                if rest.strip():
-                    for line in rest.splitlines():
-                        try:
-                            print(json.loads(line).get("text", ""))
-                        except Exception:
-                            print(line)
-                print(render.dim("— server stopped —"))
-                return
-            time.sleep(0.4)
-    except KeyboardInterrupt:
-        print(render.dim("\n— detached —"))
+    from .console_ui import run_console
+    run_console(server_id)
 
 
 # ─── main ────────────────────────────────────────────────────────────────────
