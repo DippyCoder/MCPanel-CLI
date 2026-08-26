@@ -15,8 +15,12 @@ and themes are interchangeable between the CLI and the Electron app. Electron's
     ├── addons/<name>/        ← user-installed addons (CLI-only)
     ├── addon-data/<name>/    ← an addon's own database / cache (CLI-only)
     ├── addons.json           ← which addons are disabled (CLI-only)
-    └── run/                  ← runtime state for running servers (CLI-only;
-                                ignored by the Electron app)
+    ├── run/                  ← runtime state for running servers (CLI-only;
+    │                           ignored by the Electron app)
+    └── logs/                 ← app-level log: latest.log + timestamped
+                                 archives (shared — the Electron app already
+                                 writes here; the CLI/TUI appends to the same
+                                 latest.log, see applog.py)
 
 Override the root with the MCPANEL_HOME environment variable.
 """
@@ -50,6 +54,7 @@ SERVERS_DIR = os.path.join(USER_DATA, "servers")
 PROFILES_DIR = os.path.join(USER_DATA, "profiles")
 THEMES_DIR = os.path.join(USER_DATA, "themes")
 RUN_DIR = os.path.join(USER_DATA, "run")
+LOGS_DIR = os.path.join(USER_DATA, "logs")
 CONFIG_FILE = os.path.join(USER_DATA, "config.json")
 
 # Addons: user-installed code lives in ADDONS_DIR, each addon's own persistent
@@ -61,6 +66,6 @@ ADDONS_STATE_FILE = os.path.join(USER_DATA, "addons.json")
 
 
 def ensure_dirs():
-    for d in (SERVERS_DIR, PROFILES_DIR, THEMES_DIR, RUN_DIR,
+    for d in (SERVERS_DIR, PROFILES_DIR, THEMES_DIR, RUN_DIR, LOGS_DIR,
               ADDONS_DIR, ADDON_DATA_DIR):
         os.makedirs(d, exist_ok=True)

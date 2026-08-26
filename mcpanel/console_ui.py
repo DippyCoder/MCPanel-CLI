@@ -13,7 +13,7 @@ import threading
 import time
 import types
 
-from . import render, runstate
+from . import applog, render, runstate
 from .config import load_config, find_server
 from .ping import ping_server
 
@@ -34,6 +34,10 @@ except ImportError:
 
 
 _LOG_LINE_RE = re.compile(r"^(\[[^\]]*\]:)\s?(.*)$")
+# mcpanel's own app log ("[2026-08-26 19:56:56] [INFO] message") uses two
+# adjacent bracket groups instead of Minecraft's single "[...]:" header —
+# same idea, different shape, so it gets its own fallback pattern.
+_LOG_LINE_RE2 = re.compile(r"^(\[[^\]]*\]\s*\[[^\]]*\])\s?(.*)$")
 _MAX_LINES = 3000
 
 
@@ -48,6 +52,10 @@ def _classify(rec):
 
     m = _LOG_LINE_RE.match(text)
     header, rest = m.groups() if m else (None, text)
+    if not m:
+        m2 = _LOG_LINE_RE2.match(text)
+        if m2:
+            header, rest = m2.groups()
 
     # Modern server jars (Paper/Purpur/Leaf's Brigadier error highlighting,
     # some Log4j configs) emit real ANSI/truecolor escapes in their console
@@ -205,6 +213,7 @@ def _run_action(state, label, fn):
             elif result.get("needsEula"):
                 msg = f"[mcpanel] {label} failed: EULA not accepted — run /accept-eula server first"
         if msg:
+            applog.error(msg)
             with state["lock"]:
                 state["lines"].append({"text": msg, "type": "err"})
     _run_bg(worker)

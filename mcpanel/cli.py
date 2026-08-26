@@ -15,7 +15,7 @@ import sys
 import time
 
 from . import paths, servers, profiles, system, versions, runstate, render, plugins, backup, buildtools, config
-from . import addons
+from . import addons, applog
 from . import __version__
 
 
@@ -722,6 +722,7 @@ def main(argv=None):
     except BrokenPipeError:
         return 0
     except Exception as e:
+        applog.exception(f"{getattr(args, 'action', '?')} failed: {e}")
         if is_json:
             print(json.dumps({"error": str(e)}))
         else:

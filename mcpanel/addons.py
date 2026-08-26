@@ -25,7 +25,7 @@ import tempfile
 import traceback
 import zipfile
 
-from . import paths
+from . import applog, paths
 
 # The addon API contract number. An addon declaring anything else is rejected
 # rather than imported, because a mismatch means its `register()` may expect an
@@ -299,6 +299,7 @@ def load(force=False):
         except BaseException:
             rec.status = ST_ERROR
             rec.error = traceback.format_exc()
+            applog.error(f"addon '{rec.name}' failed to import:\n{rec.error}")
             _records.append(rec)
             continue
 
@@ -314,6 +315,7 @@ def load(force=False):
             except BaseException:
                 rec.status = ST_ERROR
                 rec.error = traceback.format_exc()
+                applog.error(f"addon '{rec.name}' on_load() failed:\n{rec.error}")
                 rec.module = None
                 _records.append(rec)
                 continue
@@ -351,6 +353,7 @@ def run_startup_hooks():
         except BaseException:
             rec.status = ST_ERROR
             rec.error = traceback.format_exc()
+            applog.error(f"addon '{rec.name}' on_startup() failed:\n{rec.error}")
             rec.module = None
 
 
@@ -420,6 +423,7 @@ def register_all(sub):
         except BaseException:
             rec.status = ST_ERROR
             rec.error = traceback.format_exc()
+            applog.error(f"addon '{rec.name}' register() failed:\n{rec.error}")
             rec.module = None
 
 

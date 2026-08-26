@@ -33,7 +33,7 @@ try:
 except ImportError:
     _PT = False
 
-from . import paths, render, runstate, config
+from . import applog, paths, render, runstate, config
 from . import __version__
 from .config import load_config
 from .versions import SOFTWARE
@@ -47,7 +47,8 @@ _VERBS = [
     "duplicate", "clone", "import", "scan", "open", "ping", "files",
     "stats", "accept-eula", "backup", "search", "install", "proxy",
     "buildtools", "discover", "versions", "detect-jdk", "jdk", "system",
-    "version", "check-update", "config", "help", "exit", "quit", "shutdown",
+    "version", "check-update", "config", "help", "clear", "cls",
+    "exit", "quit", "shutdown",
 ]
 
 _PLATFORMS = ["modrinth", "hangar", "spigotmc"]
@@ -66,7 +67,7 @@ _NOUNS = {
     "restart":     ["server"],
     "kill":        ["server"],
     "cmd":         ["server"],
-    "logs":        ["server"],
+    "logs":        ["server", "mcpanel"],
     "console":     ["server"],
     "sessions":    ["server"],
     "delete":      ["server", "profile"],
@@ -95,7 +96,7 @@ _FLAGS = {
     ("restart", "server"):   ["-id", "--accept-eula"],
     ("kill",    "server"):   ["-id"],
     ("cmd",     "server"):   ["-id", "-c"],
-    ("logs",    "server"):   ["-id", "-f", "-n"],
+    ("logs",    "server"):   ["-id"],
     ("console", "server"):   ["-id"],
     ("sessions","server"):   ["-id"],
     ("delete",  "server"):   ["-id"],
@@ -160,7 +161,8 @@ _USAGE = {
     ("restart", "server"):   "/restart server -id <id> [--accept-eula]",
     ("kill",    "server"):   "/kill server -id <id>",
     ("cmd",     "server"):   "/cmd server -id <id> -c <command>",
-    ("logs",    "server"):   "/logs server -id <id> [-f] [-n <session N>]",
+    ("logs",    "server"):   "/logs server -id <id>   browse that server's logs/ folder",
+    ("logs",    "mcpanel"):  "/logs mcpanel   browse mcpanel's own application log",
     ("console", "server"):   "/console server -id <id>",
     ("sessions","server"):   "/sessions server -id <id>",
     ("delete",  "server"):   "/delete server -id <id>",
@@ -673,15 +675,22 @@ def _wizard_logs(flags, follow_override=False):
     if not sid:
         print()
         sid = _pick_server("Select server:")
-    follow  = follow_override or bool(flags.get("follow") or flags.get("f"))
-    session = flags.get("session") or flags.get("n")
+    follow = follow_override or bool(flags.get("follow") or flags.get("f"))
     if follow:
         from .cli import _follow_logs
         _follow_logs(sid)
-    else:
-        from . import servers
-        ns = types.SimpleNamespace(id=sid, session=int(session) if session else None)
-        _pr("logs", servers.get_server_log(ns))
+        return
+    srv = config.find_server(load_config(), sid)
+    if not srv:
+        print(render.red(f"  Server not found: {sid}"))
+        return
+    from . import logs_ui
+    logs_ui.run_server_log_browser(sid, srv["dir"], srv.get("name"))
+
+
+def _wizard_mcpanel_logs():
+    from . import logs_ui
+    logs_ui.run_mcpanel_log_browser()
 
 
 def _wizard_update(flags):
@@ -884,6 +893,14 @@ def _shutdown_all():
 
 # ── command executor ──────────────────────────────────────────────────────────
 
+_active_session = None
+
+
+def _set_session(session):
+    global _active_session
+    _active_session = session
+
+
 def _execute(text):
     text = text.strip()
     if not text:
@@ -917,6 +934,7 @@ def _execute(text):
     except KeyboardInterrupt:
         print(render.dim("\n  Cancelled."))
     except Exception as e:
+        applog.exception(f"/{verb} failed: {e}")
         print(render.red(f"  Error: {e}"))
 
 
@@ -931,6 +949,34 @@ def _dispatch(verb, noun, flags, pos=()):
 
     if verb == "help":
         _help()
+        return
+
+    if verb in ("clear", "cls"):
+        if _active_session is not None:
+            # Not a bare ANSI escape print: the renderer tracks the
+            # terminal's cursor position and a cached "last screen" itself,
+            # to diff against on the *next* render. A raw escape write
+            # bypasses that bookkeeping, leaving it stale — the next render
+            # then draws from wrong assumptions about what's already on
+            # screen, which is what let old content bleed through.
+            #
+            # This mirrors Renderer.clear() (erase current output, send the
+            # real clear-screen sequence, go to 0,0) but skips its trailing
+            # request_absolute_cursor_position() call: that one kicks off an
+            # async cursor-position query tied to the application's own
+            # event loop, which isn't running here — we're between
+            # .prompt() calls, not inside one — and raises "no current
+            # event loop in thread". Skipping it just means the renderer's
+            # cached "space below cursor" stays 0 until the next .prompt()
+            # call measures it fresh on its own, which it always does at
+            # startup anyway.
+            renderer = _active_session.app.renderer
+            renderer.erase()
+            renderer.output.erase_screen()
+            renderer.output.cursor_goto(0, 0)
+            renderer.output.flush()
+        else:
+            print("\033[2J\033[H", end="")
         return
 
     # ── no-arg commands ───────────────────────────────────────────────────
@@ -1034,7 +1080,10 @@ def _dispatch(verb, noun, flags, pos=()):
 
     # ── logs / console ────────────────────────────────────────────────────
     if verb == "logs":
-        _wizard_logs(flags)
+        if noun == "mcpanel":
+            _wizard_mcpanel_logs()
+        else:
+            _wizard_logs(flags)
         return
     if verb == "console":
         _wizard_logs(flags, follow_override=True)
@@ -1284,7 +1333,8 @@ def _help():
   /start  /stop  /restart  /kill  server
   /cmd server -c <command> send a console command
   /console server          attach to live output  (Ctrl-C to detach)
-  /logs server [-f] [-n N] view or follow log, or open archived session
+  /logs server [-f]        browse that server's logs/ folder  (-f: live console)
+  /logs mcpanel            browse mcpanel's own application log (errors, addon issues)
   /sessions server         list archived log sessions
   /update server           change settings (name/ram/port/sw/version/…)
   /duplicate server        copy a server
@@ -1334,6 +1384,7 @@ def _help():
 
 {C("  General")}
   /config show | path      raw config / data-directory paths
+  /clear                   clear the terminal screen
   Tab                      complete commands, IDs, software + platform names, flags
   ↑ ↓                      command history
   bottom bar               live usage hint for the command you're typing
@@ -1346,6 +1397,7 @@ def _help():
 # ── main loop ─────────────────────────────────────────────────────────────────
 
 def run():
+    applog.info(f"TUI session started (mcpanel v{__version__})")
     print(render.bold(f"\n  MCPanel CLI  v{__version__}"))
     print(render.dim("  /help for commands · Tab to complete · /exit to quit · /shutdown to stop all servers\n"))
 
@@ -1365,6 +1417,7 @@ def run():
             mouse_support=False,
         )
         prompt_str = HTML("<ansicyan><b>mcpanel</b></ansicyan> <ansibrightblack>›</ansibrightblack> ")
+        _set_session(session)
     else:
         session = None
 

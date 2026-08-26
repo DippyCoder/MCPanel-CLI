@@ -47,7 +47,7 @@ class Supervisor:
 
     def _pump(self, stream, type_):
         for raw in iter(stream.readline, b""):
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            line = raw.decode("utf-8", "replace").replace("\r", "").rstrip("\n")
             if line:
                 self.log(line, type_)
         try:
