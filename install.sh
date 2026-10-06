@@ -20,9 +20,9 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 if [ "$1" = "--uninstall" ]; then
-    rm -f "${BIN_DIR}/mcpanel"
+    rm -f "${BIN_DIR}/mcpanel" "${BIN_DIR}/mclib"
     python3 -m pip uninstall -y mcpanel-cli 2>/dev/null || true
-    echo "[done] Removed mcpanel from ${BIN_DIR} and pip."
+    echo "[done] Removed mcpanel and mclib from ${BIN_DIR} and pip."
     exit 0
 fi
 
@@ -31,7 +31,7 @@ if [ "$1" = "--pip" ]; then
     python3 -m pip install --user --upgrade "${REPO}"
     echo ""
     echo "[2/2] Installed. The 'mcpanel' command is now on your PATH (via pip)."
-    echo "      If not found, add ~/.local/bin to PATH."
+    echo "      ('mclib' is installed alongside it.) If not found, add ~/.local/bin to PATH."
     exit 0
 fi
 
@@ -40,8 +40,9 @@ python3 -m pip install --user --upgrade "prompt_toolkit>=3.0"
 
 echo "[2/3] Linking launcher into ${BIN_DIR}..."
 mkdir -p "${BIN_DIR}"
-chmod +x "${REPO}/bin/mcpanel"
+chmod +x "${REPO}/bin/mcpanel" "${REPO}/bin/mclib"
 ln -sf "${REPO}/bin/mcpanel" "${BIN_DIR}/mcpanel"
+ln -sf "${REPO}/bin/mclib" "${BIN_DIR}/mclib"
 
 echo "[3/3] Done."
 echo ""

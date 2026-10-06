@@ -92,18 +92,29 @@ def _classify(rec):
 
 def _tail_log(state, server_id):
     pos = 0
+    ident = None
+    pending = b""
     while not state["stop"]:
-        path = runstate.log_path(server_id)
+        new_lines = []
         try:
-            size = os.path.getsize(path)
-            if pos > size:
-                pos = 0  # server restarted / log rotated out from under us
-            with open(path, "r", encoding="utf-8") as f:
+            path = runstate.log_path(server_id)
+            st = os.stat(path)
+            # A restart rotates the log to a new file; a size check alone
+            # misses it once the new file has grown past our old offset.
+            cur = (st.st_dev, st.st_ino)
+            if cur != ident or pos > st.st_size:
+                ident, pos, pending = cur, 0, b""
+            with open(path, "rb") as f:
                 f.seek(pos)
-                new_lines = f.readlines()
+                chunk = f.read()
                 pos = f.tell()
-        except FileNotFoundError:
-            new_lines = []
+            # Only consume complete lines: the supervisor may be mid-write,
+            # and a half line would otherwise render as a garbage record.
+            data = pending + chunk
+            *complete, pending = data.split(b"\n")
+            new_lines = [ln.decode("utf-8", "replace") for ln in complete]
+        except (OSError, ValueError):
+            pass
         if new_lines:
             with state["lock"]:
                 for line in new_lines:
@@ -111,7 +122,10 @@ def _tail_log(state, server_id):
                     if not line:
                         continue
                     try:
-                        state["lines"].append(json.loads(line))
+                        rec = json.loads(line)
+                        if not isinstance(rec, dict):
+                            raise ValueError
+                        state["lines"].append(rec)
                     except Exception:
                         state["lines"].append({"text": line, "type": "out"})
                 if len(state["lines"]) > _MAX_LINES:
@@ -121,8 +135,12 @@ def _tail_log(state, server_id):
 
 def _poll_status(state, server_id, port):
     while not state["stop"]:
-        running = runstate.is_running(server_id)
-        ping = ping_server("127.0.0.1", int(port), timeout=1.5) if running else {"online": False}
+        try:
+            running = runstate.is_running(server_id)
+            ping = (ping_server("127.0.0.1", int(port), timeout=1.5)
+                    if running and port else {"online": False})
+        except Exception:
+            running, ping = False, {"online": False}
         with state["lock"]:
             state["running"] = running
             state["ping"] = ping

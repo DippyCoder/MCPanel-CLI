@@ -55,23 +55,42 @@ def fetch_text(url):
 
 def download_file(url, dest, on_progress=None):
     """Stream `url` to `dest`, following redirects (urllib does this for us),
-    reporting integer percent via on_progress(percent)."""
+    reporting integer percent via on_progress(percent).
+
+    The body goes to `<dest>.part` and is only renamed over `dest` once it
+    arrived completely, so a dropped connection never leaves a truncated jar
+    where the server (or plugin loader) would pick it up — and never clobbers
+    a previously working file."""
+    import os
+    tmp = dest + ".part"
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(req, timeout=60) as res:
-        total = int(res.headers.get("content-length") or 0)
-        downloaded = 0
-        last = -1
-        with open(dest, "wb") as f:
-            while True:
-                chunk = res.read(65536)
-                if not chunk:
-                    break
-                f.write(chunk)
-                downloaded += len(chunk)
-                if total and on_progress:
-                    pct = round(downloaded / total * 100)
-                    if pct != last:
-                        last = pct
-                        on_progress(pct)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as res:
+            total = int(res.headers.get("content-length") or 0)
+            downloaded = 0
+            last = -1
+            with open(tmp, "wb") as f:
+                while True:
+                    chunk = res.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total and on_progress:
+                        pct = min(100, round(downloaded / total * 100))
+                        if pct != last:
+                            last = pct
+                            on_progress(pct)
+        if total and downloaded != total:
+            raise RuntimeError(f"Download incomplete: got {downloaded} of {total} bytes")
+        if downloaded == 0:
+            raise RuntimeError("Download returned an empty file")
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
     if total and on_progress and last != 100:
         on_progress(100)

@@ -1,7 +1,9 @@
 """First-party addons shipped inside the CLI itself.
 
-These are discovered before pip-installed and user addons and are enabled by
-default, so an install that ships one (`accounts`, which MCPanel-WebUI's login
-system depends on) works with no extra setup. They are still ordinary addons:
-`mcpanel addons disable <name>` turns one off exactly like any other.
+Anything placed here is discovered before pip-installed and user addons and is
+enabled by default. It is currently empty: the `accounts` addon that
+MCPanel-WebUI signs in through used to live here and now ships separately
+(https://github.com/DippyCoder/MCPanel-Accounts), so the CLI carries no
+built-in assumptions about who uses it. The mechanism stays for future
+first-party addons.
 """

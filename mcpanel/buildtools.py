@@ -27,6 +27,7 @@ import tempfile
 import time
 
 from .http import download_file, fetch_json
+from .errors import fail
 
 # The mcpanel package's own directory — "the CLI app folder", as opposed to
 # paths.USER_DATA which is shared with the MCPanel desktop app.
@@ -55,13 +56,20 @@ def _jar_ok():
 
 
 def _last_failure_path():
-    return os.path.join(MODULES_DIR, ".last_failure")
+    # Lives in the user-data run/ dir rather than MODULES_DIR: when the
+    # package is installed somewhere read-only, the download fails *and* the
+    # marker can't be written there, so the cooldown never engaged and every
+    # single command (including the desktop app's `api` polling) re-ran three
+    # doomed download attempts.
+    from . import paths
+    return os.path.join(paths.RUN_DIR, "buildtools.last_failure")
 
 
 def _record_failure():
     try:
-        os.makedirs(MODULES_DIR, exist_ok=True)
-        with open(_last_failure_path(), "w", encoding="utf-8") as f:
+        path = _last_failure_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
     except OSError:
         pass
@@ -85,8 +93,14 @@ def _clear_failure():
 def _download_with_retries(progress=None):
     """Attempt the download up to _ATTEMPTS times. Returns None on success,
     or an error string on total failure."""
-    os.makedirs(MODULES_DIR, exist_ok=True)
-    tmp_path = BUILDTOOLS_JAR + ".part"
+    try:
+        os.makedirs(MODULES_DIR, exist_ok=True)
+    except OSError as e:
+        _record_failure()
+        return f"Could not create {MODULES_DIR}: {e}"
+    # Per-process name: two commands started together would otherwise write
+    # into the same file and could install an interleaved, corrupt jar.
+    tmp_path = f"{BUILDTOOLS_JAR}.{os.getpid()}.download"
     last_err = None
     for attempt in range(1, _ATTEMPTS + 1):
         try:
@@ -128,7 +142,7 @@ def ensure_buildtools(progress=None, force=False):
         return None
     err = _download_with_retries(progress)
     if err:
-        return {"error": err}
+        return fail("buildtools_unavailable", err)
     return None
 
 
@@ -157,7 +171,7 @@ def buildtools_version(progress=None):
         return {"version": "installed", "path": BUILDTOOLS_JAR}
     err = ensure_buildtools(progress)
     if err:
-        return {"version": "none", "error": err["error"], "helpUrl": _HELP_URL}
+        return {"version": "none", **err, "helpUrl": _HELP_URL}
     return {"version": "installed", "path": BUILDTOOLS_JAR}
 
 
@@ -166,7 +180,7 @@ def buildtools_update(progress=None):
     of whether a jar is already present."""
     err = ensure_buildtools(progress, force=True)
     if err:
-        return {"version": "none", "error": err["error"], "helpUrl": _HELP_URL}
+        return {"version": "none", **err, "helpUrl": _HELP_URL}
     return {"version": "installed", "path": BUILDTOOLS_JAR}
 
 
@@ -244,7 +258,7 @@ def build_spigot(version, server_dir, progress=None, java_path=None):
                 progress(3, f"Auto-selected JDK {rng[0]}–{rng[1]} for Spigot {version}: {match}")
     java = java or java_path or shutil.which("java")
     if not java:
-        return {"error": "Java not found on PATH — BuildTools requires a JDK to compile Spigot"}
+        return fail("java_not_found", "Java not found on PATH — BuildTools requires a JDK to compile Spigot")
 
     # Fail fast and clearly rather than let a JRE-only install (no javac —
     # common on Fedora/Debian/Ubuntu, which split the compiler into a
@@ -261,12 +275,12 @@ def build_spigot(version, server_dir, progress=None, java_path=None):
         else:
             range_hint = ""
             example_major = 21
-        return {"error": (
+        return fail("jdk_no_compiler", (
             f"'{java}' has no compiler (javac) — it looks like a JRE, not a full JDK{range_hint}. "
             "BuildTools needs a full JDK to compile Spigot. On Fedora/RHEL install the matching "
             f"'-devel' package (e.g. `sudo dnf install java-{example_major}-openjdk-devel`); on "
             f"Debian/Ubuntu install a JDK package (e.g. `sudo apt install openjdk-{example_major}-jdk`)."
-        )}
+        ))
 
     work_dir = tempfile.mkdtemp(prefix="mcpanel-buildtools-")
     try:
@@ -289,7 +303,7 @@ def build_spigot(version, server_dir, progress=None, java_path=None):
                 text=True, bufsize=1, env=_build_env(java), **popen_kwargs,
             )
         except OSError as e:
-            return {"error": f"Failed to launch '{java}': {e}"}
+            return fail("java_not_found", f"Failed to launch '{java}': {e}")
 
         pct = 5
         tail = []
@@ -306,19 +320,19 @@ def build_spigot(version, server_dir, progress=None, java_path=None):
 
         if proc.returncode != 0:
             detail = "\n".join(tail) or "(no output captured)"
-            return {"error": f"BuildTools exited with code {proc.returncode}:\n{detail}"}
+            return fail("build_failed", f"BuildTools exited with code {proc.returncode}:\n{detail}")
 
         candidates = sorted(
             f for f in os.listdir(work_dir) if f.startswith("spigot-") and f.endswith(".jar")
         )
         if not candidates:
-            return {"error": "BuildTools finished but produced no spigot-*.jar"}
+            return fail("build_failed", "BuildTools finished but produced no spigot-*.jar")
 
         shutil.copy2(os.path.join(work_dir, candidates[-1]), os.path.join(server_dir, "server.jar"))
         if progress:
             progress(100, "Build complete!")
         return None
     except Exception as e:
-        return {"error": str(e)}
+        return fail("build_failed", str(e))
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)

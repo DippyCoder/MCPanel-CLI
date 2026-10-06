@@ -1,4 +1,4 @@
-"""Data-directory layout.
+r"""Data-directory layout.
 
 Shares the *same* directory the MCPanel desktop app uses, so servers, profiles
 and themes are interchangeable between the CLI and the Electron app. Electron's
@@ -26,6 +26,7 @@ Override the root with the MCPANEL_HOME environment variable.
 """
 
 import os
+import re
 import sys
 
 # Must match the MCPanel Electron app's name (package.json "name") so both
@@ -69,3 +70,24 @@ def ensure_dirs():
     for d in (SERVERS_DIR, PROFILES_DIR, THEMES_DIR, RUN_DIR, LOGS_DIR,
               ADDONS_DIR, ADDON_DATA_DIR):
         os.makedirs(d, exist_ok=True)
+
+
+# Server / profile / backup ids end up as path components (servers/<id>,
+# run/<id>.json, backups/<id>/...), so anything that isn't a plain name must be
+# rejected before it reaches os.path.join — `-id ..` would otherwise point a
+# delete at the whole userData directory.
+_ID_RE = re.compile(r"^(?!\.{1,2}$)[A-Za-z0-9_.-]{1,128}$")
+
+
+def is_valid_id(value):
+    return isinstance(value, str) and bool(_ID_RE.match(value))
+
+
+def is_within(path, root):
+    """True when `path` resolves to `root` itself or somewhere beneath it."""
+    try:
+        path = os.path.realpath(path)
+        root = os.path.realpath(root)
+        return os.path.commonpath([path, root]) == root
+    except ValueError:  # different drives on Windows
+        return False

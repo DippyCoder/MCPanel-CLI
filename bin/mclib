@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Standalone `mclib` launcher — shorthand for `mcpanel mclib ...`, run straight
+from a checkout. Put this file (or a symlink to it) on your PATH."""
+
+import os
+import sys
+
+_REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+if _REPO not in sys.path:
+    sys.path.insert(0, _REPO)
+
+from mcpanel.cli import mclib_main  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(mclib_main())

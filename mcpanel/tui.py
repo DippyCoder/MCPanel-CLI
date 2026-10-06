@@ -48,7 +48,7 @@ _VERBS = [
     "stats", "accept-eula", "backup", "search", "install", "proxy",
     "buildtools", "discover", "versions", "detect-jdk", "jdk", "system",
     "version", "check-update", "config", "help", "clear", "cls",
-    "exit", "quit", "shutdown",
+    "exit", "quit", "shutdown", "mclib",
 ]
 
 _PLATFORMS = ["modrinth", "hangar", "spigotmc"]
@@ -901,9 +901,57 @@ def _set_session(session):
     _active_session = session
 
 
+def _mclib(tokens):
+    """`/mclib <library|url> <list|install|update|downgrade|remove> [name] [version]`
+    (also accepted without the slash). Handled before the generic parser,
+    which lowercases its second token and would mangle a repository URL."""
+    import types
+    from . import mclib
+    from .errors import CLIError
+    yes = any(t in ("-y", "--yes") for t in tokens)
+    pos = [t for t in tokens if t not in ("-y", "--yes")]
+    if len(pos) < 2 or len(pos) > 4:
+        print(render.yellow("  Usage: /mclib <library|url> <list|install|update|downgrade|remove> [name] [version]"))
+        print(render.dim("  e.g.  /mclib mclib list      /mclib mclib install accounts      "
+                         "/mclib https://github.com/o/r install v1.0"))
+        return
+
+    def confirm(text):
+        print()
+        print(render.yellow("  ⚠  THIRD-PARTY SOFTWARE"))
+        import textwrap
+        for para in text.split("\n"):
+            for line in textwrap.wrap(para, 76) or [""]:
+                print(render.dim("  " + line))
+        print()
+        return _confirm("Accept and continue?")
+
+    ns = types.SimpleNamespace(source=pos[0], op=pos[1],
+                               name=pos[2] if len(pos) > 2 else None,
+                               version=pos[3] if len(pos) > 3 else None, yes=yes)
+    try:
+        result = mclib.run(ns, confirm)
+    except CLIError as e:
+        result = e.to_dict()
+    mclib.render_mclib(result, ns)
+
+
 def _execute(text):
     text = text.strip()
     if not text:
+        return
+    # `mclib ...` works with or without the leading slash.
+    head = text.lstrip("/").split(None, 1)
+    if head and head[0].lower() == "mclib":
+        try:
+            _mclib(shlex.split(head[1]) if len(head) > 1 else [])
+        except ValueError as e:
+            print(render.red(f"  Parse error: {e}"))
+        except KeyboardInterrupt:
+            print(render.dim("\n  Cancelled."))
+        except Exception as e:
+            applog.exception(f"/mclib failed: {e}")
+            print(render.red(f"  Error: {e}"))
         return
     if text.lower() in ("exit", "quit"):
         raise SystemExit(0)
@@ -1359,6 +1407,13 @@ def _help():
   /proxy info              servers registered in a Velocity proxy's velocity.toml
   /proxy link              link a Paper-based server into a Velocity proxy
   {D("--velocity-id <id> -id <id> [--server-name <n>] [--priority <n>] [--custom-ip <ip:port>]")}
+
+{C("  Addon libraries")}
+  /mclib <library|url> list [name]           browse a library (default: mclib), or an addon's releases
+  /mclib <library> install <name> [version]  install from GitHub/Codeberg releases (asks to accept the disclaimer)
+  /mclib <library> update [name] [version]   update one addon, or everything from that library
+  /mclib <library> downgrade <name> [version] · /mclib <library> remove <name>
+  {D("a repo URL replaces <library> <name>:  /mclib https://github.com/o/r install v1.2 · libraries: <addons>/libraries.json")}
 
 {C("  Backups")}
   /backup create -id <id>                create a backup zip

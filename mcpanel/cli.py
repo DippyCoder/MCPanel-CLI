@@ -15,12 +15,34 @@ import sys
 import time
 
 from . import paths, servers, profiles, system, versions, runstate, render, plugins, backup, buildtools, config
-from . import addons, applog
+from . import addons, applog, errors, mclib, logfiles
 from . import __version__
 
 
 class _Streamed:
     """Sentinel: command already wrote all output to stdout; main() skips the final print."""
+
+
+class _ArgError(Exception):
+    def __init__(self, message, code):
+        super().__init__(message)
+        self.code = code
+
+
+class _Parser(argparse.ArgumentParser):
+    """In `api` mode argparse's own error path (usage text on stderr, exit 2)
+    gives the desktop app / WebUI nothing to parse. Raise instead, so main()
+    can answer with the usual {"error": ...} JSON. Subparsers inherit this
+    class automatically."""
+    json_errors = False
+
+    def error(self, message):
+        if _Parser.json_errors:
+            # "invalid choice" on a command position means the command doesn't
+            # exist in this CLI — typically an addon that isn't installed.
+            code = "unknown_command" if "invalid choice" in message else "invalid_arguments"
+            raise _ArgError(f"{self.prog}: {message}", code)
+        super().error(message)
 
 
 # ─── adapters for controllers that don't take (args, progress) ───────────────
@@ -81,24 +103,28 @@ def _discover(args=None, progress=None):
 
 
 def _shutdown(args=None, progress=None):
-    cfg = runstate  # just to trigger import; use load from servers
     from .config import load_config
-    import time
-    config = load_config()
-    running = [s for s in config.get("servers", []) if runstate.is_running(s["id"])]
+    cfg = load_config()
+    running = [s for s in cfg.get("servers", []) if runstate.is_running(s["id"])]
     if not running:
         return {"success": True, "stopped": []}
     stopped, failed = [], []
     for srv in running:
         r = runstate.send_request(srv["id"], {"op": "kill"})
-        if r.get("ok"):
+        if r.get("ok") or runstate.kill_orphan(srv["id"]):
             stopped.append(srv["id"])
         else:
             failed.append({"id": srv["id"], "error": r.get("error")})
-    time.sleep(0.8)
-    for srv in running:
-        runstate.cleanup_state(srv["id"])
-    return {"success": True, "stopped": stopped, "failed": failed}
+    # Each supervisor removes its own state once java is gone. Wiping state
+    # here — as this used to, even for servers whose kill *failed* — left
+    # live java processes the panel could no longer see or stop.
+    deadline = time.time() + 5
+    while time.time() < deadline and any(runstate.is_running(i) for i in stopped):
+        time.sleep(0.1)
+    out = {"success": not failed, "stopped": stopped, "failed": failed}
+    if failed:
+        out.update(errors.fail("stop_failed", f"{len(failed)} server(s) could not be stopped"))
+    return out
 
 
 def _cli_tui(args=None, progress=None):
@@ -137,7 +163,7 @@ _mcpanel_complete() {
 
   # top-level commands
   if [[ $COMP_CWORD -eq 1 ]]; then
-    local cmds="create list ls info fetch delete rm update start stop restart kill cmd logs sessions console ping duplicate clone files stats accept-eula import proxy scan open versions detect-jdk jdk system version check-update config shutdown discover search install completion backup buildtools api cli debug"
+    local cmds="create list ls info fetch delete rm update start stop restart kill cmd logs upload-log sessions console ping duplicate clone files stats accept-eula import proxy scan open versions detect-jdk jdk system version check-update config shutdown discover errors search install completion backup buildtools addons mclib api cli debug"
     COMPREPLY=($(compgen -W "$cmds" -- "$cur"))
     return
   fi
@@ -148,7 +174,7 @@ _mcpanel_complete() {
     create)   COMPREPLY=($(compgen -W "server profile profile-from-server" -- "$cur")) ;;
     list|ls)  COMPREPLY=($(compgen -W "servers profiles" -- "$cur")) ;;
     info)     COMPREPLY=($(compgen -W "server profile plugin" -- "$cur")) ;;
-    fetch)    COMPREPLY=($(compgen -W "server profile config log files stats status system update jdk jdk-compat buildtools versions" -- "$cur")) ;;
+    fetch)    COMPREPLY=($(compgen -W "server profile config log logfiles logfile files stats status system update jdk jdk-compat buildtools versions" -- "$cur")) ;;
     delete|rm) COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
     backup)   COMPREPLY=($(compgen -W "create list delete restore" -- "$cur")) ;;
     import)   COMPREPLY=($(compgen -W "server profile" -- "$cur")) ;;
@@ -161,6 +187,9 @@ _mcpanel_complete() {
     completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")) ;;
     buildtools) COMPREPLY=($(compgen -W "version update" -- "$cur")) ;;
     debug)    COMPREPLY=($(compgen -W "first_start" -- "$cur")) ;;
+    mclib)
+      if [[ $COMP_CWORD -eq 2 ]]; then COMPREPLY=($(compgen -W "mclib" -- "$cur"))
+      elif [[ $COMP_CWORD -eq 3 ]]; then COMPREPLY=($(compgen -W "list install update downgrade remove" -- "$cur")); fi ;;
   esac
 }
 complete -F _mcpanel_complete mcpanel
@@ -198,6 +227,7 @@ _mcpanel() {
         'ping:ping a server'
         'files:show file tree'
         'stats:show disk usage, plus CPU/RAM while running'
+        'upload-log:upload a server log file to mclo.gs'
         'sessions:list archived log sessions'
         'accept-eula:accept the Minecraft EULA for a server'
         'duplicate:duplicate a server'
@@ -212,6 +242,8 @@ _mcpanel() {
         'completion:output shell completion script'
         'buildtools:SpigotMC BuildTools version / update'
         'discover:re-scan the servers directory for unregistered servers'
+        'errors:list every error code the API can return'
+        'mclib:install addons from addon libraries (MCLib) or GitHub/Codeberg'
         'detect-jdk:find installed Java runtimes'
         'system:show system info'
         'version:show CLI version'
@@ -251,7 +283,7 @@ _mcpanel() {
         list|ls)
           _values 'type' 'servers' 'profiles' ;;
         fetch)
-          _values 'type' 'server' 'profile' 'config' 'log' 'files' 'stats' 'status' 'system' 'update' 'jdk' 'jdk-compat' 'buildtools' 'versions' ;;
+          _values 'type' 'server' 'profile' 'config' 'log' 'logfiles' 'logfile' 'files' 'stats' 'status' 'system' 'update' 'jdk' 'jdk-compat' 'buildtools' 'versions' ;;
         delete|rm|import|scan|open)
           _values 'type' 'server' 'profile' ;;
         proxy)
@@ -366,6 +398,12 @@ def add_commands(sub):
     p = leaf(fsub, "profile", profiles.fetch_profile, "fetch-profile"); f_id(p)
     leaf(fsub, "config", servers.get_config, "config")
     p = leaf(fsub, "log", servers.get_server_log, "get-server-log"); f_id(p)
+    p = leaf(fsub, "logfiles", logfiles.list_log_files, "log-files",
+             help="list the server's own log files (logs/ folder)"); f_id(p)
+    p = leaf(fsub, "logfile", logfiles.read_log_file, "log-file",
+             help=f"read one of the server's log files (last {logfiles.READ_MAX_LINES} lines)"); f_id(p)
+    p.add_argument("-file", "--file", dest="file", default="latest.log", metavar="<name>",
+                   help="path inside logs/ (default: latest.log)")
     p = leaf(fsub, "files", servers.get_server_file_tree, "file-tree"); f_id(p)
     p = leaf(fsub, "stats", servers.get_server_dir_stats, "stats"); f_id(p)
     p = leaf(fsub, "status", servers.is_server_running, "status"); f_id(p)
@@ -384,7 +422,10 @@ def add_commands(sub):
     # delete -------------------------------------------------------------
     delete = sub.add_parser("delete", help="delete a server / profile", aliases=["rm"])
     dsub = delete.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
-    p = leaf(dsub, "server", servers.delete_server, "delete-server"); f_id(p)
+    p = leaf(dsub, "server", servers.delete_server, "delete-server",
+             help="delete a server and its files (also linked ones)"); f_id(p)
+    p.add_argument("--keep-files", dest="keep_files", action="store_true",
+                   help="only remove it from MCPanel's list; the folder stays where it is")
     p = leaf(dsub, "profile", profiles.delete_profile, "delete-profile"); f_id(p)
 
     # update -------------------------------------------------------------
@@ -425,6 +466,12 @@ def add_commands(sub):
                    metavar="<N>", help="show archived session N (1=most recent, see: mcpanel sessions)")
     p.set_defaults(func=servers.get_server_log, action="logs", follow=False, session=None)
 
+    p = sub.add_parser("upload-log", help="upload a server log file to mclo.gs and print the link")
+    noun(p); f_id(p)
+    p.add_argument("-file", "--file", dest="file", default="latest.log", metavar="<name>",
+                   help="path inside logs/ (default: latest.log)")
+    p.set_defaults(func=logfiles.upload_log, action="upload-log")
+
     p = sub.add_parser("sessions", help="list archived log sessions for a server")
     noun(p); f_id(p)
     p.set_defaults(func=servers.list_session_logs, action="list-sessions")
@@ -459,9 +506,13 @@ def add_commands(sub):
     # import -------------------------------------------------------------
     imp = sub.add_parser("import", help="import an existing server / profile folder")
     imsub = imp.add_subparsers(dest="noun", metavar="<server|profile>", required=True)
-    p = leaf(imsub, "server", servers.import_server, "import-server", progress_ok=True)
+    p = leaf(imsub, "server", servers.import_server, "import-server", progress_ok=True,
+             help="register an existing server folder (no MCPanel config needed)")
     p.add_argument("-path", "--path", dest="path", required=True, metavar="<folder>")
-    f_name(p)
+    f_name(p, required=False)
+    p.add_argument("--link", dest="link", action="store_true",
+                   help="use the folder in place instead of copying it; deleting the "
+                        "server later only unregisters it")
     p.add_argument("-p", "-port", "--port", dest="port", type=int, default=None)
     p.add_argument("-ram", "--ram", dest="ram", default=None)
     p.add_argument("-sw", "--software", dest="software", default=None)
@@ -528,6 +579,10 @@ def add_commands(sub):
     # shutdown -----------------------------------------------------------
     p = sub.add_parser("shutdown", help="kill all running servers and stop MCPanel")
     p.set_defaults(func=_shutdown, action="shutdown")
+
+    # errors ---------------------------------------------------------------
+    p = sub.add_parser("errors", help="list every error code the API can return")
+    p.set_defaults(func=errors.list_errors, action="errors")
 
     # discover -------------------------------------------------------------
     p = sub.add_parser("discover", help="re-scan the servers directory for unregistered servers")
@@ -629,13 +684,32 @@ def add_commands(sub):
     p = leaf(adnsub, "remove", addons.cmd_remove, "addons-remove",
              help="remove a user-installed addon")
     p.add_argument("name", metavar="<name>")
+    p = leaf(adnsub, "ui", addons.cmd_ui, "addons-ui",
+             help="UI scripts/styles addons contribute to MCPanel or MCPanel-WebUI (JSON)")
+    p.add_argument("--product", dest="product", default="mcpanel", choices=addons.UI_PRODUCTS)
+    leaf(adnsub, "libraries", addons.cmd_libraries, "addons-libraries",
+         help="list the addon libraries mclib can use (addons/libraries.json)")
+
+    # mclib (addon libraries) ----------------------------------------------
+    p = sub.add_parser(
+        "mclib", help="install addons from addon libraries (MCLib, …) or GitHub/Codeberg releases",
+        description="mcpanel mclib <library|repo-url> <list|install|update|downgrade|remove> [name] [version]"
+                    " — with a repo URL the name is skipped: mcpanel mclib <url> install [version]")
+    p.add_argument("source", metavar="<library|url>",
+                   help="a library from <addons>/libraries.json (default: mclib) or a GitHub/Codeberg repo URL")
+    p.add_argument("op", metavar="<list|install|update|downgrade|remove>")
+    p.add_argument("rest", nargs="*", metavar="[name] [version]")
+    p.add_argument("-y", "--yes", dest="yes", action="store_true",
+                   help="accept the third-party disclaimer without asking")
+    p.set_defaults(func=mclib.cmd_mclib, action="mclib")
+    render.RENDERERS["mclib"] = mclib.render_mclib
 
     # Addon-provided commands mount last, so `--help` lists the built-ins first.
     addons.register_all(sub)
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(
+    parser = _Parser(
         prog="mcpanel",
         description="MCPanel — Minecraft Server Panel, from the terminal.",
         epilog="Use 'mcpanel api <command>' for raw JSON output, or 'mcpanel cli' for the interactive GUI.",
@@ -678,15 +752,30 @@ def _progress_printer():
 
 def main(argv=None):
     argv = argv if argv is not None else sys.argv[1:]
-    paths.ensure_dirs()
+    api_mode = bool(argv) and argv[0] == "api"
+    try:
+        paths.ensure_dirs()
+    except OSError as e:
+        msg = f"Cannot create MCPanel data directory {paths.USER_DATA}: {e}"
+        print(json.dumps(errors.fail("data_dir_unwritable", msg)) if api_mode
+              else render.red("✗ " + msg))
+        return 1
     parser = build_parser()
-    args = parser.parse_args(argv)
+    _Parser.json_errors = api_mode
+    try:
+        args = parser.parse_args(argv)
+    except _ArgError as e:
+        print(json.dumps(errors.fail(e.code, str(e))))
+        return 2
+    finally:
+        _Parser.json_errors = False
 
     buildtools.startup_check()
     global _last_discovery
     try:
         _last_discovery = config.discover_servers()
     except Exception:
+        applog.exception("server discovery failed")
         _last_discovery = []
 
     # Addons were imported while the parser tree was built; this is where they
@@ -721,13 +810,25 @@ def main(argv=None):
         result = args.func(args, progress)
     except BrokenPipeError:
         return 0
-    except Exception as e:
-        applog.exception(f"{getattr(args, 'action', '?')} failed: {e}")
+    except KeyboardInterrupt:
         if is_json:
-            print(json.dumps({"error": str(e)}))
+            print(json.dumps(errors.fail("interrupted")))
         else:
-            print(render.red("✗ " + str(e)))
+            print(render.red("\n✗ Interrupted"))
+        return 130
+    except Exception as e:
+        doc = errors.from_exception(e)
+        # An expected, coded failure (CLIError, an addon's own error class) is
+        # not a crash; only log a traceback for genuinely unexpected ones.
+        if doc["code"] == "internal_error":
+            applog.exception(f"{getattr(args, 'action', '?')} failed: {e}")
+        if is_json:
+            print(json.dumps(doc))
+        else:
+            print(render.red("✗ " + doc["error"]))
         return 1
+
+    result = errors.normalize(result)
 
     if is_json and not isinstance(result, _Streamed):
         print(json.dumps(result, default=str))
@@ -737,6 +838,15 @@ def main(argv=None):
     if isinstance(result, dict) and result.get("error"):
         return 1
     return 0
+
+
+def mclib_main(argv=None):
+    """`mclib ...` — shorthand for `mcpanel mclib ...`. `mclib --json ...`
+    gives the API's JSON output (same as `mcpanel api mclib ...`)."""
+    argv = list(argv if argv is not None else sys.argv[1:])
+    if argv and argv[0] == "--json":
+        return main(["api", "mclib"] + argv[1:])
+    return main(["mclib"] + argv)
 
 
 if __name__ == "__main__":

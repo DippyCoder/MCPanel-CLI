@@ -2,6 +2,7 @@
 of this and prints raw JSON; these functions only run in human mode."""
 
 import datetime
+import re
 
 from . import util
 
@@ -103,8 +104,11 @@ def render_create_server(result, args):
     if _err(result):
         return
     s = result.get("server", {})
-    print(green("✓ ") + f"Created server {bold(s.get('name'))} "
+    verb = "Linked" if s.get("linked") else ("Imported" if "detected" in result else "Created")
+    print(green("✓ ") + f"{verb} server {bold(s.get('name'))} "
           + dim(f"({s.get('id')})  {s.get('software')} {s.get('version')}  {s.get('ram')} RAM  port {s.get('port')}"))
+    if s.get("linked"):
+        print(dim(f"  using {s.get('dir')} in place (remove it with: mcpanel delete server -id {s.get('id')} --keep-files)"))
 
 
 def render_success(result, args):
@@ -113,6 +117,9 @@ def render_success(result, args):
     if isinstance(result, dict) and result.get("needsEula"):
         print(yellow("⚠ EULA not accepted.") + " Run: mcpanel accept-eula server -id " + getattr(args, "id", "<id>")
               + dim("   (or add --accept-eula)"))
+        return
+    if isinstance(result, dict) and result.get("message"):
+        print(green("✓ ") + result["message"])
         return
     print(green("✓ done"))
 
@@ -195,6 +202,43 @@ def render_sessions(result, args):
         print(f"  {s['n']:<3} {_ts(s.get('timestamp', 0))}")
     sid = getattr(args, "id", "<id>")
     print(dim(f"\nView a session: mcpanel logs server -id {sid} -n <N>"))
+
+
+def render_log_files(result, args):
+    if _err(result):
+        return
+    files = result.get("files", [])
+    if not files:
+        print(dim("No log files yet — the server writes them to its logs/ folder once it has run."))
+        return
+    print(bold(f"{'FILE':<32} {'SIZE':>10}  MODIFIED"))
+    for f in files:
+        print(f"{f['name']:<32} {util.human_size(f.get('size', 0)):>10}  {_ts(f.get('modified', 0))}")
+    sid = getattr(args, "id", "<id>")
+    print(dim(f"\nRead one:   mcpanel fetch logfile -id {sid} -file <name>"))
+    print(dim(f"Share one:  mcpanel upload-log -id {sid} -file <name>"))
+
+
+def render_log_file(result, args):
+    if _err(result):
+        return
+    if result.get("truncated"):
+        print(dim(f"… showing the last {len(result['lines'])} of {result['totalLines']} lines"))
+    for line in result.get("lines", []):
+        if re.search(r"\b(ERROR|SEVERE|FATAL)\b", line):
+            print(red(line))
+        elif re.search(r"\bWARN(ING)?\b", line):
+            print(yellow(line))
+        else:
+            print(line)
+
+
+def render_upload_log(result, args):
+    if _err(result):
+        return
+    print(green("✓ ") + f"Uploaded {result.get('file', 'log')}: " + bold(result["url"]))
+    if result.get("truncated"):
+        print(dim(f"  Only the newest {result['lines']} of {result['totalLines']} lines fit mclo.gs' limit."))
 
 
 # ─── versions ─────────────────────────────────────────────────────────────────
@@ -445,6 +489,17 @@ def render_proxy_link(result, args):
           + dim(f"→ {result.get('address', '')}"))
 
 
+def render_errors(result, args):
+    if _err(result):
+        return
+    items = result.get("errors", [])
+    width = max((len(e.get("code", "")) for e in items), default=10)
+    print(bold(f"{'CODE':<{width}}  MESSAGE"))
+    for e in items:
+        src = "" if e.get("source") == "cli" else dim(f"  [{e.get('source')}]")
+        print(f"{e.get('code', ''):<{width}}  {e.get('message', '')}{src}")
+
+
 def render_completion(result, args):
     print(result.get("_raw", result.get("script", "")), end="")
 
@@ -590,6 +645,9 @@ RENDERERS = {
     "get-server-log": render_logs,
     "logs": render_logs,
     "list-sessions": render_sessions,
+    "log-files": render_log_files,
+    "log-file": render_log_file,
+    "upload-log": render_upload_log,
     "status": render_status,
     "ping": render_ping,
     "stats": render_stats,
@@ -628,6 +686,7 @@ RENDERERS = {
     "info-plugin": render_plugin_info,
     "proxy-info": render_proxy_info,
     "proxy-link": render_proxy_link,
+    "errors": render_errors,
     "completion-bash": render_completion,
     "completion-zsh": render_completion,
     "backup-create": render_backup_create,

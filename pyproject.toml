@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcpanel-cli"
-version = "1.3.0"
+version = "1.4.0"
 description = "MCPanel — Minecraft Server Panel, as a CLI (terminal backend for MCPanel)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -19,8 +19,9 @@ Source = "https://github.com/DippyCoder/MCPanel"
 
 [project.scripts]
 mcpanel = "mcpanel.cli:main"
+mclib = "mcpanel.cli:mclib_main"
 
-# Discovered rather than listed, so a bundled addon added under
+# Discovered rather than listed, so a first-party addon added under
 # mcpanel/bundled_addons/ ships automatically instead of silently missing from
 # the wheel until someone remembers to update this file.
 [tool.setuptools.packages.find]

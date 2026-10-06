@@ -26,7 +26,15 @@ def has_compiler(java_path):
     opposed to a JRE-only install. Many distros (Fedora/Debian/Ubuntu) split
     packages this way — e.g. Fedora's `java-21-openjdk` is JRE-only; the
     compiler lives in the separate `java-21-openjdk-devel` package."""
-    real = os.path.realpath(java_path) if os.path.exists(java_path) else java_path
+    if not java_path:
+        return False
+    if not os.path.exists(java_path):
+        # A bare command name ("java"): resolve it on PATH, otherwise its
+        # dirname is "" and javac was looked for in the current directory.
+        java_path = shutil.which(java_path)
+        if not java_path:
+            return False
+    real = os.path.realpath(java_path)
     return os.path.isfile(os.path.join(os.path.dirname(real), _javac_exe()))
 
 

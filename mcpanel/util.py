@@ -27,10 +27,40 @@ def copy_dir(src, dest):
             continue
         sp = os.path.join(src, entry.name)
         dp = os.path.join(dest, entry.name)
-        if entry.is_dir():
+        # Symlinks are recreated, never followed: following one that points
+        # back up the tree recursed until the disk filled.
+        if entry.is_symlink():
+            try:
+                if os.path.lexists(dp):
+                    os.remove(dp)
+                os.symlink(os.readlink(sp), dp)
+            except OSError:
+                pass
+        elif entry.is_dir(follow_symlinks=False):
             copy_dir(sp, dp)
         else:
             shutil.copy2(sp, dp)
+
+
+def atomic_write_text(path, text):
+    """Write `text` to `path` via a temp file + rename, so a crash or full
+    disk never leaves a truncated server.properties / velocity.toml behind."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        try:
+            shutil.copymode(path, tmp)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
 
 
 def parse_storage_limit(value):
@@ -51,11 +81,11 @@ def get_dir_size(path):
     try:
         for entry in os.scandir(path):
             full = os.path.join(path, entry.name)
-            if entry.is_dir():
+            if entry.is_dir(follow_symlinks=False):
                 size += get_dir_size(full)
             else:
                 try:
-                    size += entry.stat().st_size
+                    size += entry.stat(follow_symlinks=False).st_size
                 except OSError:
                     pass
     except OSError:
@@ -81,6 +111,18 @@ def normalize_ram(value):
     num = m.group(1)
     unit = (m.group(2) or "M").upper()[0]  # M or G
     return f"{num}{unit}"
+
+
+def is_valid_ram(ram):
+    """Whether `ram` (already normalised) is something -Xmx accepts."""
+    return bool(re.match(r"^[1-9]\d*[MG]$", str(ram or "")))
+
+
+def is_valid_port(port):
+    try:
+        return 1 <= int(port) <= 65535
+    except (TypeError, ValueError):
+        return False
 
 
 def xms_from_ram(ram):
@@ -112,7 +154,7 @@ def build_file_tree(dir_path, root_path, depth=0):
     for entry in entries:
         full = os.path.join(dir_path, entry.name)
         rel = os.path.relpath(full, root_path)
-        if entry.is_dir():
+        if entry.is_dir(follow_symlinks=False):
             items.append({
                 "name": entry.name, "type": "dir", "path": rel,
                 "children": build_file_tree(full, root_path, depth + 1),

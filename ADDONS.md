@@ -4,8 +4,9 @@ Addons extend the CLI with new command groups. Because the CLI *is* MCPanel's
 backend, an addon that adds `mcpanel api foo bar` automatically becomes callable
 from the desktop app and the WebUI too — there is no second integration to write.
 
-The accounts/permissions system that MCPanel-WebUI depends on is itself an addon
-(`mcpanel-addon-accounts`), so this API is exercised by a real consumer.
+The accounts/permissions system that MCPanel-WebUI depends on is itself an addon,
+shipped separately as [MCPanel-Accounts](https://github.com/DippyCoder/MCPanel-Accounts)
+(`mcpanel-addon-accounts` on pip), so this API is exercised by a real consumer.
 
 ---
 
@@ -119,6 +120,94 @@ looks native.
 
 Returns (and creates) `<userData>/addon-data/<name>/` — where an addon should
 put its database, cache or config. Never write outside it.
+
+### `api.errors(codes)` *(CLI 1.4.0+)*
+
+Declares the addon's error codes as `{code: default message}`; they are listed
+by `mcpanel api errors` next to the CLI's own. Guard it with
+`hasattr(api, "errors")` if you also support older CLIs.
+
+Every API error uses one shape:
+
+```json
+{"error": "Ready-to-show message", "code": "stable_snake_case_code"}
+```
+
+A handler fails either by **returning** that dict, or by **raising** any
+exception that has a string `code` attribute — the CLI turns it into the same
+document (an exception without one becomes `internal_error`). Always put a
+complete sentence in `error`: MCPanel and MCPanel-WebUI display it verbatim
+and only branch on `code`, which is what lets a new code you ship today show
+up correctly in an app built before it existed. Once a code is published,
+keep its meaning.
+
+---
+
+## Extending the MCPanel and MCPanel-WebUI interfaces *(CLI 1.4.0+)*
+
+An addon can ship JavaScript and CSS that the desktop app and the WebUI load
+into their own page: add sidebar pages, add server tabs, or change existing
+pages. Declare the files in `ADDON`:
+
+```python
+ADDON = {
+    "name": "hello", "version": "1.0.0", "api_version": 1,
+    "ui": {
+        "scripts": ["ui/main.js"],
+        "styles":  ["ui/style.css"],
+        "products": ["mcpanel", "webui"],      # default: both
+        # optional per-product override: "webui": {"scripts": ["ui/web.js"]}
+    },
+}
+```
+
+Paths are relative to the addon folder (max 2 MB each). The apps fetch them
+with `mcpanel api addons ui --product mcpanel|webui` at startup — after
+installing or updating an addon, reload the app to pick up UI changes.
+
+Each script runs in its own function scope with `addon` (`{name, version,
+file}`) and the global `MCPanelAddons`:
+
+```js
+const A = window.MCPanelAddons;
+
+// A new sidebar page. render() runs once, onShow() every time it's opened.
+A.registerPage({
+  id: 'hello', label: 'Hello', title: 'Hello', subtitle: `Running in ${A.product}`,
+  render(el) { el.innerHTML = '<div class="card">…</div>'; },
+});
+
+// A new tab on the server detail page; render() gets the open server.
+A.registerServerTab({
+  id: 'hello', label: 'Hello',
+  render(el, server) { el.textContent = `Server ${server.name}`; },
+});
+
+// Change existing pages: react when they're shown and edit their DOM.
+A.on('page', (name) => { if (name === 'settings') { /* … */ } });
+A.on('server-tab', (tab, serverId) => {});   // 'console', 'files', … or 'addon-<id>'
+A.on('server-open', (serverId) => {});
+
+// Call your own CLI commands (or any `mcpanel api …`); failures resolve as {error, code}.
+const r = await A.cli(['hello', 'status']);
+if (r.error) A.toast(r.error, 'error');
+```
+
+Also available: `A.product` (`'mcpanel'` | `'webui'`), `A.servers()`,
+`A.currentServer()`, `A.showPage(name)`, `A.addStyle(css)`, `A.escapeHtml(s)`,
+`A.openExternal(url)`, `A.off(event, fn)`, `A.apiVersion`.
+
+**Theming.** Everything renders inside the panel's own DOM, so the user's
+selected theme applies automatically. Use the theme's CSS variables rather than
+fixed colours — `--bg-base`, `--bg-elevated`, `--bg-hover`, `--border`,
+`--text-primary`, `--text-secondary`, `--text-muted`, `--accent`,
+`--accent-dim`, `--accent-rgb`, `--green`, `--red`, `--orange`, `--radius`,
+`--font-display`, `--font-mono` — and the panel's classes (`.card`,
+`.btn-primary`, `.btn-ghost`, `.btn-sm`, `.input`, `.page-header`).
+
+**Trust.** UI scripts run with the app's full privileges — in the WebUI, with
+the signed-in user's session (the WebUI's permission checks still apply to
+what they call). This is part of what the third-party disclaimer covers.
 
 ---
 

@@ -13,10 +13,64 @@ import time
 
 from . import paths, util
 from .config import load_config, find_server
+from .errors import fail
 
 
 def _now_ms():
     return int(time.time() * 1000)
+
+
+def _new_profile_dir():
+    """Fresh `profile_<ms>` id + directory. Two creations in the same
+    millisecond used to share (and overwrite) one folder."""
+    paths.ensure_dirs()
+    while True:
+        pid = "profile_" + str(_now_ms())
+        profile_dir = os.path.join(paths.PROFILES_DIR, pid)
+        try:
+            os.makedirs(profile_dir)
+            return pid, profile_dir
+        except FileExistsError:
+            time.sleep(0.002)
+
+
+def _profile_dir(profile_id):
+    """Directory for a profile id, or None if the id isn't a plain name.
+    `-id ..` used to resolve to the userData folder itself — and
+    `delete profile` would then rmtree every server."""
+    if not paths.is_valid_id(profile_id):
+        return None
+    return os.path.join(paths.PROFILES_DIR, profile_id)
+
+
+def _invalid_id(profile_id):
+    return fail("invalid_id", f"Invalid profile id: {profile_id!r}")
+
+
+def _write_meta(profile_dir, meta):
+    util.atomic_write_text(os.path.join(profile_dir, "profile.json"), json.dumps(meta, indent=2))
+
+
+def _meta_from_args(pid, args):
+    return {
+        "id": pid,
+        "name": args.name,
+        "description": getattr(args, "desc", None) or "",
+        "software": _split_list(getattr(args, "software", None)),
+        "versions": _split_list(getattr(args, "versions", None)),
+        "created": _now_ms(),
+    }
+
+
+def _check_import_source(path):
+    src = os.path.abspath(os.path.expanduser(path or ""))
+    if not os.path.isdir(src):
+        return None, fail("invalid_path", f"Not a folder: {path}")
+    # Importing a folder that contains the profiles dir would copy the copy
+    # into itself until the disk is full.
+    if paths.is_within(paths.PROFILES_DIR, src):
+        return None, fail("invalid_path", "Cannot import a folder that contains MCPanel's own data directory")
+    return src, None
 
 
 def _split_list(value):
@@ -37,6 +91,8 @@ def get_profiles(args=None, progress=None):
                 try:
                     with open(meta_file, "r", encoding="utf-8") as f:
                         meta = json.load(f)
+                    if not isinstance(meta, dict):
+                        continue
                     meta["id"] = d
                     profiles.append(meta)
                 except Exception:
@@ -54,43 +110,42 @@ def fetch_profile(args, progress=None):
     for p in get_profiles():
         if p["id"] == args.id:
             return p
-    return {"error": "Profile not found"}
+    return fail("profile_not_found")
 
 
 def create_profile(args, progress=None):
+    profile_dir = None
     try:
-        pid = "profile_" + str(_now_ms())
-        profile_dir = os.path.join(paths.PROFILES_DIR, pid)
-        os.makedirs(profile_dir, exist_ok=True)
-        meta = {
-            "id": pid,
-            "name": args.name,
-            "description": getattr(args, "desc", None) or "",
-            "software": _split_list(getattr(args, "software", None)),
-            "versions": _split_list(getattr(args, "versions", None)),
-            "created": _now_ms(),
-        }
-        with open(os.path.join(profile_dir, "profile.json"), "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        pid, profile_dir = _new_profile_dir()
+        meta = _meta_from_args(pid, args)
+        _write_meta(profile_dir, meta)
         return {"success": True, "profile": {**meta, "dir": profile_dir}}
     except Exception as e:
-        return {"error": str(e)}
+        if profile_dir:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        return fail("operation_failed", str(e))
 
 
 def delete_profile(args, progress=None):
     try:
-        profile_dir = os.path.join(paths.PROFILES_DIR, args.id)
-        if os.path.exists(profile_dir):
-            shutil.rmtree(profile_dir, ignore_errors=True)
+        profile_dir = _profile_dir(args.id)
+        if profile_dir is None:
+            return _invalid_id(args.id)
+        if not os.path.isdir(profile_dir):
+            return fail("profile_not_found")
+        shutil.rmtree(profile_dir, ignore_errors=True)
         return {"success": True}
     except Exception as e:
-        return {"error": str(e)}
+        return fail("operation_failed", str(e))
 
 
 def open_profile_folder(args, progress=None):
     import sys
-    profile_dir = os.path.join(paths.PROFILES_DIR, args.id)
-    os.makedirs(profile_dir, exist_ok=True)
+    profile_dir = _profile_dir(args.id)
+    if profile_dir is None:
+        return _invalid_id(args.id)
+    if not os.path.isdir(profile_dir):
+        return fail("profile_not_found")
     try:
         if sys.platform == "win32":
             subprocess.Popen(["explorer", profile_dir])
@@ -104,24 +159,23 @@ def open_profile_folder(args, progress=None):
 
 
 def import_profile(args, progress=None):
+    profile_dir = None
     try:
-        pid = "profile_" + str(_now_ms())
-        profile_dir = os.path.join(paths.PROFILES_DIR, pid)
-        os.makedirs(profile_dir, exist_ok=True)
-        util.copy_dir(args.path, profile_dir)
-        meta = {
-            "id": pid,
-            "name": args.name,
-            "description": getattr(args, "desc", None) or "",
-            "software": _split_list(getattr(args, "software", None)),
-            "versions": _split_list(getattr(args, "versions", None)),
-            "created": _now_ms(),
-        }
-        with open(os.path.join(profile_dir, "profile.json"), "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        src, err = _check_import_source(args.path)
+        if err:
+            return err
+        pid, profile_dir = _new_profile_dir()
+        util.copy_dir(src, profile_dir)
+        meta = _meta_from_args(pid, args)
+        _write_meta(profile_dir, meta)
         return {"success": True, "profile": {**meta, "dir": profile_dir}}
-    except Exception as e:
-        return {"error": str(e)}
+    except BaseException as e:
+        # Don't leave a half-copied profile behind (copy error, Ctrl-C, …).
+        if profile_dir:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        if not isinstance(e, Exception):
+            raise
+        return fail("operation_failed", str(e))
 
 
 def scan_profile_folder(args, progress=None):
@@ -142,15 +196,22 @@ def scan_profile_folder(args, progress=None):
 
 
 def create_profile_from_server(args, progress=None):
+    profile_dir = None
     try:
         cfg = load_config()
         srv = find_server(cfg, args.id)
         if not srv:
-            return {"error": "Server not found"}
-        pid = "profile_" + str(_now_ms())
-        profile_dir = os.path.join(paths.PROFILES_DIR, pid)
-        os.makedirs(profile_dir, exist_ok=True)
-        for rel in _split_list(args.paths):
+            return fail("server_not_found")
+        rels = _split_list(args.paths)
+        for rel in rels:
+            # `-paths ../../.ssh` must not be able to copy files from outside
+            # the server folder into a profile.
+            full = os.path.join(srv["dir"], rel)
+            if (os.path.isabs(rel) or os.path.normpath(rel) == "."
+                    or not paths.is_within(full, srv["dir"])):
+                return fail("invalid_path", f"Path must be inside the server folder: {rel}")
+        pid, profile_dir = _new_profile_dir()
+        for rel in rels:
             src = os.path.join(srv["dir"], rel)
             dst = os.path.join(profile_dir, rel)
             if not os.path.exists(src):
@@ -160,16 +221,12 @@ def create_profile_from_server(args, progress=None):
                 shutil.copy2(src, dst)
             else:
                 util.copy_dir(src, dst)
-        meta = {
-            "id": pid,
-            "name": args.name,
-            "description": getattr(args, "desc", None) or "",
-            "software": _split_list(getattr(args, "software", None)),
-            "versions": _split_list(getattr(args, "versions", None)),
-            "created": _now_ms(),
-        }
-        with open(os.path.join(profile_dir, "profile.json"), "w", encoding="utf-8") as f:
-            json.dump(meta, f, indent=2)
+        meta = _meta_from_args(pid, args)
+        _write_meta(profile_dir, meta)
         return {"success": True, "profile": {**meta, "dir": profile_dir}}
-    except Exception as e:
-        return {"error": str(e)}
+    except BaseException as e:
+        if profile_dir:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+        if not isinstance(e, Exception):
+            raise
+        return fail("operation_failed", str(e))

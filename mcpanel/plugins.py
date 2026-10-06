@@ -1,9 +1,11 @@
 """Plugin / Mod search and install via Modrinth, Hangar, and SpigotMC (Spiget)."""
 
 import os
+from urllib.parse import quote
 
 from .http import fetch_json, fetch_json_with_headers, download_file
 from .config import load_config, find_server
+from .errors import fail
 
 MODDED_SOFTWARES = {"fabric"}
 
@@ -25,6 +27,27 @@ def _dest_dir(software):
 
 def _safe_filename(name):
     return "".join(c if c.isalnum() or c in "._- " else "_" for c in name).strip()
+
+
+def _jar_filename(name, fallback):
+    """File names come from remote APIs (and the user's slug); reduce them to
+    a single, plain path component so `../../x.jar` can't escape plugins/."""
+    base = os.path.basename(str(name or "").replace("\\", "/"))
+    base = _safe_filename(base).lstrip(".")
+    if not base:
+        base = _safe_filename(fallback) or "plugin"
+    if not base.lower().endswith((".jar", ".zip")):
+        base += ".jar"
+    return base
+
+
+def _hangar_owner_slug(slug, owner=None):
+    """Hangar projects are addressed as owner/slug. Accepts "owner/slug" as
+    the slug, or a bare slug plus --owner (falling back to slug as owner)."""
+    if "/" in slug:
+        o, slug = slug.split("/", 1)
+        return (owner or o), slug
+    return (owner or slug), slug
 
 
 def _html_to_text(raw_html):
@@ -91,7 +114,7 @@ def get_modrinth_download(slug, software="paper", mc_version=None):
     params = f"loaders={quote(_json.dumps(loaders))}"
     if mc_version:
         params += f"&game_versions={quote(_json.dumps([mc_version]))}"
-    url = f"https://api.modrinth.com/v2/project/{slug}/version?{params}"
+    url = f"https://api.modrinth.com/v2/project/{quote(slug, safe='')}/version?{params}"
     versions = fetch_json(url)
     if not versions:
         raise RuntimeError(f"No compatible version found for {slug} on MC {mc_version}")
@@ -99,22 +122,23 @@ def get_modrinth_download(slug, software="paper", mc_version=None):
     primary = next((f for f in files if f.get("primary")), files[0] if files else None)
     if not primary:
         raise RuntimeError("No download file found")
-    return {"url": primary["url"], "filename": primary["filename"]}
+    return {"url": primary["url"], "filename": primary.get("filename")}
 
 
 def get_modrinth_version_download(version_id):
     """Fetch the exact file for a version the user picked from the version-
     history list — no loader/mc_version compatibility filtering, since they
     already chose this version deliberately."""
-    v = fetch_json(f"https://api.modrinth.com/v2/version/{version_id}")
+    v = fetch_json(f"https://api.modrinth.com/v2/version/{quote(str(version_id), safe='')}")
     files = v.get("files", [])
     primary = next((f for f in files if f.get("primary")), files[0] if files else None)
     if not primary:
         raise RuntimeError("No download file found for that version")
-    return {"url": primary["url"], "filename": primary["filename"]}
+    return {"url": primary["url"], "filename": primary.get("filename")}
 
 
 def get_modrinth_info(slug, limit=25, offset=0):
+    slug = quote(slug, safe="")
     all_versions = fetch_json(f"https://api.modrinth.com/v2/project/{slug}/version")
     page = all_versions[offset:offset + limit]
     result = {
@@ -142,10 +166,10 @@ def get_modrinth_info(slug, limit=25, offset=0):
 def search_hangar(query, mc_version=None, limit=20, offset=0):
     url = (
         f"https://hangar.papermc.io/api/v1/projects"
-        f"?query={query}&platform=PAPER&limit={limit}&offset={offset}"
+        f"?query={quote(query)}&platform=PAPER&limit={limit}&offset={offset}"
     )
     if mc_version:
-        url += f"&version={mc_version}"
+        url += f"&version={quote(mc_version)}"
     data = fetch_json(url)
     results = [
         {
@@ -170,6 +194,7 @@ def search_hangar(query, mc_version=None, limit=20, offset=0):
 
 
 def get_hangar_download(slug, owner, mc_version=None, pin_version=None):
+    owner, slug = quote(owner, safe=""), quote(slug, safe="")
     if pin_version:
         version = pin_version
     else:
@@ -179,6 +204,7 @@ def get_hangar_download(slug, owner, mc_version=None, pin_version=None):
         if not results:
             raise RuntimeError(f"No versions found for {slug} on Hangar")
         version = results[0]["name"]
+    version = quote(str(version), safe="")
     dl_url = (
         f"https://hangar.papermc.io/api/v1/projects/{owner}/{slug}"
         f"/versions/{version}/PAPER/download"
@@ -187,6 +213,7 @@ def get_hangar_download(slug, owner, mc_version=None, pin_version=None):
 
 
 def get_hangar_info(slug, owner, limit=25, offset=0):
+    owner, slug = quote(owner, safe=""), quote(slug, safe="")
     url = (
         f"https://hangar.papermc.io/api/v1/projects/{owner}/{slug}/versions"
         f"?limit={limit}&offset={offset}"
@@ -256,7 +283,7 @@ def search_spiget(query, limit=20, offset=0):
         # Real text search — Spiget has no "free only" search variant, so
         # premium resources are filtered out below instead.
         url = (
-            f"https://api.spiget.org/v2/search/resources/{quote(query)}"
+            f"https://api.spiget.org/v2/search/resources/{quote(query, safe='')}"
             f"?field=name&size={limit}&page={page}&sort=-downloads&fields={fields}"
         )
     else:
@@ -309,6 +336,9 @@ def get_spiget_download(resource_id, pin_version=None):
     page, not a jar). Some external resources do link straight to a .jar
     file though (e.g. a GitHub release asset) — those are still safe to
     download directly from that URL, so only the rest get refused."""
+    resource_id = quote(str(resource_id), safe="")
+    if pin_version is not None:
+        pin_version = quote(str(pin_version), safe="")
     detail = fetch_json(f"https://api.spiget.org/v2/resources/{resource_id}")
     name = detail.get("name") or f"spigot-{resource_id}"
     if detail.get("external"):
@@ -329,6 +359,7 @@ def get_spiget_download(resource_id, pin_version=None):
 
 def get_spiget_info(resource_id, limit=25, offset=0):
     import datetime as _dt
+    resource_id = quote(str(resource_id), safe="")
     page = offset // limit + 1 if limit else 1
     url = (
         f"https://api.spiget.org/v2/resources/{resource_id}/versions"
@@ -390,7 +421,7 @@ def search_plugins(args, progress=None):
     elif platform in ("spigotmc", "spiget"):
         results, has_more = search_spiget(query, limit, offset)
     else:
-        return {"error": f"Unknown platform '{platform}'. One of: modrinth, hangar, spigotmc"}
+        return fail("unknown_platform", f"Unknown platform '{platform}'. One of: modrinth, hangar, spigotmc")
     return {"results": results, "hasMore": has_more}
 
 
@@ -404,14 +435,14 @@ def get_plugin_info(args, progress=None):
         if platform == "modrinth":
             return get_modrinth_info(slug, limit, offset)
         elif platform == "hangar":
-            owner = getattr(args, "owner", None) or (slug.split("/")[0] if "/" in slug else slug)
-            return get_hangar_info(slug, owner, limit, offset)
+            owner, name = _hangar_owner_slug(slug, getattr(args, "owner", None))
+            return get_hangar_info(name, owner, limit, offset)
         elif platform in ("spigotmc", "spiget"):
             return get_spiget_info(slug, limit, offset)
         else:
-            return {"error": f"Unknown platform '{platform}'. One of: modrinth, hangar, spigotmc"}
+            return fail("unknown_platform", f"Unknown platform '{platform}'. One of: modrinth, hangar, spigotmc")
     except Exception as e:
-        return {"error": str(e)}
+        return fail("operation_failed", str(e))
 
 
 def install_plugin(args, progress=None):
@@ -429,17 +460,19 @@ def install_plugin(args, progress=None):
     if server_id:
         srv = find_server(cfg, server_id)
         if not srv:
-            return {"error": f"Server not found: {server_id}"}
+            return fail("server_not_found", f"Server not found: {server_id}")
         dest_base = srv["dir"]
         if not mc_version:
             mc_version = srv.get("version")
     elif profile_id:
         from . import paths
+        if not paths.is_valid_id(profile_id):
+            return fail("invalid_id", f"Invalid profile id: {profile_id!r}")
         dest_base = os.path.join(paths.PROFILES_DIR, profile_id)
         if not os.path.exists(dest_base):
-            return {"error": f"Profile directory not found: {profile_id}"}
+            return fail("profile_not_found", f"Profile not found: {profile_id}")
     else:
-        return {"error": "Either --id (server) or --profile-id is required"}
+        return fail("install_target_required")
 
     software = srv.get("software", "paper") if srv else "paper"
     plugin_dir = _dest_dir(software)
@@ -449,18 +482,25 @@ def install_plugin(args, progress=None):
             info = get_modrinth_version_download(pin_version) if pin_version \
                 else get_modrinth_download(slug, software, mc_version)
         elif platform == "hangar":
-            owner = getattr(args, "owner", None) or slug.split("/")[0] if "/" in slug else slug
-            info = get_hangar_download(slug, owner, mc_version, pin_version)
+            # (Previously `a or b if c else d`, which parsed as
+            # `(a or b) if c else d` and silently ignored --owner.)
+            owner, name = _hangar_owner_slug(slug, getattr(args, "owner", None))
+            info = get_hangar_download(name, owner, mc_version, pin_version)
         elif platform in ("spigotmc", "spiget"):
             info = get_spiget_download(slug, pin_version)
         else:
-            return {"error": f"Unknown platform '{platform}'"}
+            return fail("unknown_platform", f"Unknown platform '{platform}'. One of: modrinth, hangar, spigotmc")
     except Exception as e:
-        return {"error": str(e)}
+        return fail("plugin_unavailable", str(e))
 
+    filename = _jar_filename(info.get("filename"), slug)
+    info["filename"] = filename
     dest_dir = os.path.join(dest_base, plugin_dir)
-    os.makedirs(dest_dir, exist_ok=True)
-    dest_file = os.path.join(dest_dir, info["filename"])
+    try:
+        os.makedirs(dest_dir, exist_ok=True)
+    except OSError as e:
+        return fail("operation_failed", f"Cannot create {dest_dir}: {e}")
+    dest_file = os.path.join(dest_dir, filename)
 
     if progress:
         progress(0, f"Downloading {info['filename']}…")
@@ -472,7 +512,7 @@ def install_plugin(args, progress=None):
             (lambda p: progress(p, f"Downloading… {p}%")) if progress else None,
         )
     except Exception as e:
-        return {"error": f"Download failed: {e}"}
+        return fail("download_failed", f"Download failed: {e}")
 
     if progress:
         progress(100, "Done!")

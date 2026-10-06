@@ -26,6 +26,7 @@ import traceback
 import zipfile
 
 from . import applog, paths
+from .errors import fail, register as _register_error_codes
 
 # The addon API contract number. An addon declaring anything else is rejected
 # rather than imported, because a mismatch means its `register()` may expect an
@@ -405,6 +406,14 @@ class AddonAPI:
         from . import render as _render
         _render.ADDON_RENDERERS[action] = fn
 
+    # ── errors ──
+    def errors(self, codes):
+        """Declare this addon's error codes as {code: default message}. They
+        are listed by `mcpanel api errors`; handlers then fail with
+        {"error": "<message>", "code": "<code>"} (or raise an exception that
+        carries a `code` attribute) exactly like built-in commands."""
+        _register_error_codes(codes, self._record.name)
+
     # ── storage ──
     def data_dir(self, name=None):
         d = os.path.join(paths.ADDON_DATA_DIR, name or self._record.name)
@@ -427,6 +436,78 @@ def register_all(sub):
             rec.module = None
 
 
+# ─── UI contributions (MCPanel desktop / MCPanel-WebUI) ───────────────────────
+UI_PRODUCTS = ("mcpanel", "webui")
+_UI_MAX_FILE = 2 * 1024 * 1024
+
+
+def _ui_spec(module, product):
+    """The scripts/styles an addon contributes to `product`, from ADDON["ui"]:
+
+        "ui": {"scripts": [...], "styles": [...], "products": ["mcpanel", "webui"]}
+
+    `products` defaults to both. A per-product block overrides the shared
+    lists: "ui": {"webui": {"scripts": [...]}}."""
+    ui = (getattr(module, "ADDON", None) or {}).get("ui")
+    if not isinstance(ui, dict):
+        return None
+    block = ui.get(product) if isinstance(ui.get(product), dict) else None
+    products = ui.get("products", list(UI_PRODUCTS))
+    if block is None and product not in products:
+        return None
+    src = block if block is not None else ui
+    scripts = [s for s in src.get("scripts", []) if isinstance(s, str)]
+    styles = [s for s in src.get("styles", []) if isinstance(s, str)]
+    return (scripts, styles) if (scripts or styles) else None
+
+
+def _read_ui_file(base, rel):
+    full = os.path.normpath(os.path.join(base, rel))
+    if not paths.is_within(full, base):
+        raise ValueError("path escapes the addon folder: " + rel)
+    if os.path.getsize(full) > _UI_MAX_FILE:
+        raise ValueError("file is larger than 2 MB: " + rel)
+    with open(full, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def cmd_ui(args, progress=None):
+    """Backs `mcpanel api addons ui --product mcpanel|webui`: every loaded
+    addon's UI scripts and stylesheets, inline, for the app to inject. An
+    addon whose files can't be read is reported in `errors`, not fatal."""
+    product = getattr(args, "product", None) or "mcpanel"
+    if product not in UI_PRODUCTS:
+        return fail("invalid_arguments", "--product must be one of: " + ", ".join(UI_PRODUCTS))
+    out, problems = [], []
+    for rec in load():
+        if rec.status != ST_LOADED or rec.module is None:
+            continue
+        spec = _ui_spec(rec.module, product)
+        if not spec:
+            continue
+        base = os.path.dirname(os.path.abspath(getattr(rec.module, "__file__", "") or rec.location))
+        try:
+            item = {
+                "addon": rec.name,
+                "version": rec.version,
+                "scripts": [{"path": p, "content": _read_ui_file(base, p)} for p in spec[0]],
+                "styles": [{"path": p, "content": _read_ui_file(base, p)} for p in spec[1]],
+            }
+        except (OSError, ValueError, UnicodeDecodeError) as e:
+            problems.append({"addon": rec.name, "error": str(e)})
+            continue
+        out.append(item)
+    return {"product": product, "addons": out, "errors": problems}
+
+
+def cmd_libraries(args=None, progress=None):
+    """Backs `mcpanel api addons libraries` — the configured addon libraries."""
+    from . import mclib
+    libs = mclib.libraries()
+    return {"libraries": [{"name": n, **spec} for n, spec in libs.items()],
+            "file": os.path.join(paths.ADDONS_DIR, mclib.LIBRARIES_FILE)}
+
+
 # ─── `mcpanel addons ...` command handlers ───────────────────────────────────
 def cmd_list(args=None, progress=None):
     if disabled_by_env():
@@ -441,14 +522,14 @@ def cmd_list(args=None, progress=None):
 def cmd_info(args, progress=None):
     rec = find(args.name)
     if rec is None:
-        return {"error": "No addon named '{}'".format(args.name)}
+        return fail("addon_not_found", "No addon named '{}'".format(args.name))
     return {"addon": rec.to_dict()}
 
 
 def _set_enabled(name, enabled):
     rec = find(name)
     if rec is None:
-        return {"error": "No addon named '{}'".format(name)}
+        return fail("addon_not_found", "No addon named '{}'".format(name))
     state = _read_state()
     disabled = [str(n) for n in state.get("disabled", []) if isinstance(state.get("disabled"), list)]
     if enabled:
@@ -475,39 +556,69 @@ def cmd_disable(args, progress=None):
     return _set_enabled(args.name, False)
 
 
-def _extract_zip(zip_path, dest_root):
-    """Unpacks an addon zip into dest_root, returning the installed name."""
+def _safe_extract_zip(zip_path, dest):
+    """Unpacks a zip into `dest`, refusing absolute paths and traversal."""
     with zipfile.ZipFile(zip_path) as zf:
         names = [n for n in zf.namelist()
-                 if not n.startswith("__MACOSX") and not n.startswith("._")]
+                 if not n.startswith("__MACOSX") and not os.path.basename(n).startswith("._")]
         if not names:
             raise ValueError("archive is empty")
-
-        # Reject absolute paths and traversal before writing anything.
         for n in names:
             if os.path.isabs(n) or ".." in n.replace("\\", "/").split("/"):
                 raise ValueError("archive contains an unsafe path: " + n)
+        for n in names:
+            zf.extract(n, dest)
 
-        tops = {n.replace("\\", "/").split("/")[0] for n in names}
-        rooted = len(tops) == 1 and any(
-            n.replace("\\", "/").endswith("/__init__.py") for n in names)
 
-        if rooted:
-            name = tops.pop()
-            target = os.path.join(dest_root, name)
-            if os.path.exists(target):
-                shutil.rmtree(target)
-            zf.extractall(dest_root)
-            return name
+def _find_addon_root(path, depth=0):
+    """The addon package inside `path`: `path` itself when it has an
+    __init__.py, else its single child package. Also looks through one
+    wrapper folder, which is how a GitHub "Download ZIP" of an addon's
+    repository is laid out (Repo-main/<package>/__init__.py)."""
+    if os.path.isfile(os.path.join(path, "__init__.py")):
+        return path
+    try:
+        entries = [e for e in sorted(os.listdir(path))
+                   if not e.startswith((".", "_")) and e != "__MACOSX"]
+    except OSError:
+        return None
+    packages = [os.path.join(path, e) for e in entries
+                if os.path.isfile(os.path.join(path, e, "__init__.py"))]
+    if len(packages) == 1:
+        return packages[0]
+    if len(packages) > 1:
+        raise ValueError("found several Python packages ({}) — point at the addon's own "
+                         "package folder instead".format(", ".join(os.path.basename(p) for p in packages)))
+    dirs = [os.path.join(path, e) for e in entries if os.path.isdir(os.path.join(path, e))]
+    if depth == 0 and len(dirs) == 1:
+        return _find_addon_root(dirs[0], depth + 1)
+    return None
 
-        # Flat archive: everything belongs under a directory named for the zip.
-        name = os.path.splitext(os.path.basename(zip_path))[0]
-        target = os.path.join(dest_root, name)
-        if os.path.exists(target):
-            shutil.rmtree(target)
-        os.makedirs(target, exist_ok=True)
-        zf.extractall(target)
-        return name
+
+def _install_tree(src_pkg):
+    """Copies an addon package into ADDONS_DIR under its folder name. Staged
+    next to the target and swapped in, so a failed copy never deletes the
+    currently installed version."""
+    name = os.path.basename(os.path.normpath(src_pkg))
+    if not name or name.startswith((".", "_")):
+        raise ValueError("unusable addon folder name: {!r}".format(name))
+    target = os.path.join(paths.ADDONS_DIR, name)
+    # Dot-prefixed so discovery never mistakes a leftover for an addon.
+    staging = os.path.join(paths.ADDONS_DIR, "." + name + ".installing")
+    old = os.path.join(paths.ADDONS_DIR, "." + name + ".previous")
+    shutil.rmtree(staging, ignore_errors=True)
+    shutil.copytree(src_pkg, staging, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    shutil.rmtree(old, ignore_errors=True)
+    if os.path.exists(target):
+        os.replace(target, old)
+    try:
+        os.replace(staging, target)
+    except OSError:
+        if os.path.exists(old):
+            os.replace(old, target)
+        raise
+    shutil.rmtree(old, ignore_errors=True)
+    return name
 
 
 def cmd_install(args, progress=None):
@@ -523,29 +634,34 @@ def cmd_install(args, progress=None):
             if progress:
                 progress(10, "Downloading addon…")
             _http.download_file(source, local)
-            name = _extract_zip(local, paths.ADDONS_DIR)
-
+            source_kind, staged = "zip", local
         elif os.path.isdir(source):
-            if not os.path.isfile(os.path.join(source, "__init__.py")):
-                return {"error": "That directory is not a Python package (no __init__.py)"}
-            name = os.path.basename(os.path.abspath(source.rstrip("/\\")))
-            target = os.path.join(paths.ADDONS_DIR, name)
-            if os.path.exists(target):
-                shutil.rmtree(target)
-            shutil.copytree(source, target)
-
+            source_kind, staged = "dir", source
         elif source.endswith(".zip") and os.path.isfile(source):
-            name = _extract_zip(source, paths.ADDONS_DIR)
-
+            source_kind, staged = "zip", source
         elif source.endswith(".py") and os.path.isfile(source):
             name = os.path.basename(source)[:-3]
             shutil.copy2(source, os.path.join(paths.ADDONS_DIR, name + ".py"))
-
+            source_kind = "py"
         else:
-            return {"error": "Not an addon: expected a .py file, a package directory, "
-                             "a .zip, or an https:// URL to a zip"}
+            return fail("addon_install_failed",
+                        "Not an addon: expected a .py file, an addon folder, a .zip, "
+                        "or an https:// URL to a zip")
+
+        if source_kind == "zip":
+            tmpdir = tmpdir or tempfile.mkdtemp(prefix="mcpanel-addon-")
+            unpacked = os.path.join(tmpdir, "unpacked")
+            os.makedirs(unpacked)
+            _safe_extract_zip(staged, unpacked)
+            staged = unpacked
+        if source_kind in ("zip", "dir"):
+            root = _find_addon_root(staged)
+            if root is None:
+                return fail("addon_install_failed",
+                            "No addon package found (a folder with an __init__.py) in " + source)
+            name = _install_tree(root)
     except Exception as e:
-        return {"error": str(e)}
+        return fail("addon_install_failed", "Could not install the addon: {}".format(e))
     finally:
         if tmpdir:
             shutil.rmtree(tmpdir, ignore_errors=True)
@@ -566,18 +682,19 @@ def cmd_install(args, progress=None):
 def cmd_remove(args, progress=None):
     rec = find(args.name)
     if rec is None:
-        return {"error": "No addon named '{}'".format(args.name)}
+        return fail("addon_not_found", "No addon named '{}'".format(args.name))
     if rec.source != "user":
-        return {"error": "'{}' is a {} addon — it is not installed in {} and cannot be "
-                         "removed this way. Disable it instead: mcpanel addons disable {}".format(
-                             rec.name, rec.source, paths.ADDONS_DIR, rec.name)}
+        return fail("addon_not_removable",
+                    "'{}' is a {} addon — it is not installed in {} and cannot be "
+                    "removed this way. Disable it instead: mcpanel addons disable {}".format(
+                        rec.name, rec.source, paths.ADDONS_DIR, rec.name))
     try:
         if os.path.isdir(rec.location):
             shutil.rmtree(rec.location)
         elif os.path.isfile(rec.location):
             os.remove(rec.location)
     except Exception as e:
-        return {"error": str(e)}
+        return fail("operation_failed", str(e))
 
     # Dropping it from `disabled` too, so a later reinstall isn't silently off.
     state = _read_state()

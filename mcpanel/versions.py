@@ -2,16 +2,18 @@
 software. Direct port of the version fetchers and resolveDownloadUrl in
 main.js."""
 
+import json
 import re
 
 from .http import fetch_json, fetch_text, post_json
+from .errors import fail, CLIError
 
 _FILL_GQL = "https://fill.papermc.io/graphql"
-_GQL_VERSIONS = '{{ project(key: "{project}") {{ versions(last: 100) {{ nodes {{ key support {{ status }} }} }} }} }}'
+_GQL_VERSIONS = '{{ project(key: {project}) {{ versions(last: 100) {{ nodes {{ key support {{ status }} }} }} }} }}'
 
 def _papermc_versions(project, unstable=False):
     """Fetch versions from fill.papermc.io GraphQL. Returns newest-first list."""
-    query = _GQL_VERSIONS.format(project=project)
+    query = _GQL_VERSIONS.format(project=json.dumps(project))
     data = post_json(_FILL_GQL, {"query": query})
     nodes = data["data"]["project"]["versions"]["nodes"]
     if unstable:
@@ -132,20 +134,25 @@ def fetch_versions(software, pre_release=False, unstable=False):
         "spigot": lambda: fetch_spigot_versions(),
     }
     if software not in fetchers:
-        return {"error": "Unknown software"}
+        return fail("invalid_software", f"Unknown software '{software}'")
     try:
         return {"versions": fetchers[software]()}
     except Exception as e:
-        return {"error": str(e)}
+        return fail("versions_unavailable", f"Could not fetch {software} versions: {e}")
 
 
 # ─── Download URL resolution ─────────────────────────────────────────────────
-_GQL_DOWNLOAD = '{{ project(key: "{project}") {{ version(key: "{version}") {{ builds(last: 1) {{ nodes {{ downloads {{ url }} }} }} }} }} }}'
+# Values are inserted as JSON string literals (valid GraphQL strings), so a
+# version containing a quote can't break or alter the query.
+_GQL_DOWNLOAD = '{{ project(key: {project}) {{ version(key: {version}) {{ builds(last: 1) {{ nodes {{ downloads {{ url }} }} }} }} }} }}'
 
 def _papermc_url(project, version, unstable):
-    query = _GQL_DOWNLOAD.format(project=project, version=version)
+    query = _GQL_DOWNLOAD.format(project=json.dumps(project), version=json.dumps(str(version)))
     data = post_json(_FILL_GQL, {"query": query})
-    nodes = data["data"]["project"]["version"]["builds"]["nodes"]
+    ver = ((data.get("data") or {}).get("project") or {}).get("version")
+    if not ver:
+        raise CLIError("unknown_version", f"Unknown {project} version: {version}")
+    nodes = ver["builds"]["nodes"]
     if not nodes:
         raise RuntimeError(f"No builds found for {project} {version}")
     return nodes[-1]["downloads"][0]["url"]

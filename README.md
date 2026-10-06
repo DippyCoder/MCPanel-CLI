@@ -150,13 +150,16 @@ mcpanel stop server -id srv_1700000000000
 | `list servers` | List all servers + online status |
 | `info server -id <id>` | Full server details |
 | `update server -id <id> [-t -ram -port -sw -v -java -jargs -storage]` | Change settings (port rewrites `server.properties`) |
-| `delete server -id <id>` | Delete server + files |
+| `delete server -id <id> [--keep-files]` | Delete the server and its files (a linked server's original folder too). `--keep-files` only removes it from MCPanel's list and leaves the folder alone - the panels' **Remove** button |
 | `duplicate server -id <id> -t <newName>` | Copy a server |
-| `import server -path <folder> -t <name> [-port -ram -sw -v -java -jargs]` | Adopt an existing server folder |
+| `import server -path <folder> [-t <name>] [--link] [-port -ram -sw -v -java -jargs]` | Adopt any existing server folder - no MCPanel config needed; software, version, port and RAM are detected. `--link` uses the folder in place instead of copying it |
 | `start \| stop \| restart \| kill server -id <id>` | Lifecycle (`start`/`restart` accept `--accept-eula`) |
 | `cmd server -id <id> -c "<command>"` | Send a console command |
 | `logs server -id <id> [-f] [-n <N>]` / `console server -id <id>` | View / follow console output |
 | `sessions server -id <id>` | List archived log sessions |
+| `fetch logfiles -id <id>` | List the server's own log files (`logs/`: `latest.log` + archives) |
+| `fetch logfile -id <id> [-file <name>]` | Read one of them (default `latest.log`; `.gz` archives too; last 10k lines) |
+| `upload-log -id <id> [-file <name>]` | Upload a log file to [mclo.gs](https://mclo.gs) and print the link. Over 10k lines / 25 MB, the oldest lines are cut off |
 | `ping server -id <id>` (or `-host <h> -port <p>`) | Server-list-ping |
 | `files server -id <id>` | File tree |
 | `stats server -id <id>` | Disk usage, plus the running server's CPU % and RAM |
@@ -168,7 +171,7 @@ mcpanel stop server -id srv_1700000000000
 | Command | What it does |
 |---------|--------------|
 | `proxy info --velocity-id <id>` | List servers registered in a Velocity proxy config |
-| `proxy link -id <id> --velocity-id <id> [--server-name <name>] [--priority <pos>] [--custom-ip <ip:port>]` | Link a Paper-based server into a Velocity proxy (writes `paper-global.yml` + `velocity.toml`) |
+| `proxy link -id <id> --velocity-id <id> [--server-name <name>] [--priority <pos>] [--custom-ip <ip:port>]` | Link a Paper-based server (Paper, Purpur, Folia, Leaf) into a Velocity proxy (writes `paper-global.yml` + `velocity.toml`; rolled back on failure) |
 
 ### Profiles (server presets)
 | Command | What it does |
@@ -265,6 +268,8 @@ mcpanel api list servers                    # { "servers": [...] }
 mcpanel api fetch config                    # the whole config.json
 mcpanel api fetch versions -sw paper        # { "versions": [...] }
 mcpanel api fetch log     -id srv_123       # [{time,text,type}, ...]
+mcpanel api fetch logfiles -id srv_123      # {files:[{name,size,modified}]}
+mcpanel api upload-log    -id srv_123       # {success,url,id,raw,file,lines,totalLines,truncated}
 mcpanel api fetch status  -id srv_123       # true / false
 mcpanel api ping server   -id srv_123       # { online, players, ... }
 mcpanel api fetch stats   -id srv_123       # { size, ramBytes, cpuPct }
@@ -275,7 +280,18 @@ mcpanel api backup list -id srv_123         # { backups: [...] }
 mcpanel api fetch jdk-compat -sw spigot -v 1.21.1   # { range, jdks, recommended }
 ```
 
-Errors come back as `{"error": "..."}` with a non-zero exit code.
+Every error comes back as `{"error": "<message>", "code": "<code>"}` with a non-zero exit code - argument errors and crashes included. `error` is always a complete, ready-to-show sentence; `code` is a stable identifier for logic only. **Clients should display `error` as-is and never keep their own code→text table**: that way an error added in a newer CLI still reads correctly in an older MCPanel or WebUI. Unknown codes should be treated like the generic `error`.
+
+`mcpanel api errors` lists every code (the CLI's plus any addon's) with its default message.
+
+`proxy link` is all-or-nothing: if writing `velocity.toml`, `server.properties`, `paper-global.yml` or `config.json` fails, every file already written is restored and the reply looks like:
+
+```json
+{"error": "Proxy link failed while writing paper-global.yml: ...", "code": "proxy_link_failed",
+ "failedStep": "paper-global.yml", "rolledBack": true, "rollbackErrors": []}
+```
+
+`rolledBack: false` means the restore itself failed for the files in `rollbackErrors`.
 
 ---
 
@@ -288,14 +304,14 @@ Addons add new command groups to the CLI. Because the CLI *is* MCPanel's backend
 | `addons list` | List discovered addons with their source and status |
 | `addons info <name>` | One addon's metadata (and its traceback, if it failed to load) |
 | `addons enable <name>` / `addons disable <name>` | Toggle an addon; disabling never deletes anything |
-| `addons install <path\|url>` | Install from a `.py` file, a directory, a `.zip`, or an `https://` URL |
+| `addons install <path\|url>` | Install from a `.py` file, an addon folder (or a project folder containing one), a `.zip`, or an `https://` URL - e.g. a GitHub "Download ZIP" link. Reinstalling upgrades in place |
 | `addons remove <name>` | Remove a user-installed addon (bundled and pip-installed ones are refused) |
 
 Addons are discovered from three places, in this order - first wins on a name clash:
 
 | Source | Location |
 |--------|----------|
-| **bundled** | ships inside the CLI (`accounts` is one) - enabled by default |
+| **bundled** | ships inside the CLI (`mcpanel/bundled_addons/`, currently empty) - enabled by default |
 | **pip** | any installed distribution exposing the `mcpanel.addons` entry-point group |
 | **user** | `<data dir>/addons/<name>.py` or `<data dir>/addons/<name>/__init__.py` |
 
@@ -307,29 +323,48 @@ Writing one is documented in **[ADDONS.md](ADDONS.md)**.
 
 ---
 
-## Accounts & permissions
+### Addon libraries (`mcpanel mclib` / `mclib`)
 
-The bundled **`accounts`** addon gives MCPanel a real multi-user layer - named accounts, PBKDF2-hashed passwords, session tokens, roles, and a per-permission access model - stored in SQLite at `<data dir>/addon-data/accounts/accounts.db`. It's what [MCPanel-WebUI](https://github.com/DippyCoder/MCPanel-WebUI) authenticates against, so the CLI and the panel share one user database.
+Install addons from an addon library - [MCLib](https://github.com/DippyCoder/MCLib) by default - or straight from a GitHub/Codeberg repository. Versions come from the repository's **releases**; no other platform is accepted.
 
-> **The default login is `admin` / `admin`.** Change it before the panel is reachable from anywhere but localhost:
-> ```bash
-> mcpanel accounts passwd -u admin -p "a real password"
-> ```
-
-```bash
-mcpanel accounts list                                       # who exists
-mcpanel accounts create -u steve -p "…" -r operator         # add an operator
-mcpanel accounts update -u steve --disable                  # lock without deleting
-mcpanel accounts perms                                      # every permission, by area
-mcpanel accounts roles list                                 # admin / operator / viewer
-mcpanel accounts settings --set allow_self_password_change=false
+```
+mcpanel mclib <library|repo-url> <list|install|update|downgrade|remove> [name] [version]
+mclib         <library|repo-url> <list|install|update|downgrade|remove> [name] [version]
 ```
 
-Permissions are `<area>.<action>` strings (`servers.start`, `files.write`, …). An account's effective set is the union of its **role** and its own **extra permissions**. Three roles ship builtin: `admin` (everything), `operator` (run and maintain servers), `viewer` (read-only). `terminal.access` and `cli.raw` are excluded from both non-admin roles on purpose - both amount to root on the host.
+```bash
+mclib mclib list                          # browse MCLib
+mclib mclib list accounts                 # an addon's releases
+mclib mclib install accounts [v1.1.0]     # newest stable, or a pinned release tag
+mclib mclib update [accounts] [version]   # one addon, or everything from that library
+mclib mclib downgrade accounts [version]  # to the previous (or a given) release
+mclib mclib remove accounts
+mclib https://github.com/o/r install v2   # a repo URL replaces <library> <name>
+```
 
-The last enabled account holding `accounts.manage` can't be deleted, disabled or demoted, so an install can't lock itself out.
+`mclib` is a shorthand for `mcpanel mclib` (installed next to `mcpanel`); in the TUI use `/mclib` or just `mclib`. Before anything is downloaded from an addon's repository you must accept the third-party disclaimer (prompt, or `-y`/`--yes`). In JSON mode an unaccepted install returns code `disclaimer_required` with the disclaimer text and the library's terms, so an app can show them and retry with `--yes`.
 
-Full reference: **[mcpanel/bundled_addons/accounts/README.md](mcpanel/bundled_addons/accounts/README.md)**.
+All addons - whether they're for the CLI, the desktop app or the WebUI - install into the CLI's `addons/` folder and run inside the CLI. Two files there belong to this command:
+
+| File | What it's for |
+|---|---|
+| `addons/libraries.json` | The libraries `mclib <name>` can use. Created with `mclib` → MCLib; add your own `{"name": {"url": ".../index.json"}}` entries for other libraries. |
+| `addons/mclib-installed.json` | Which addon came from which library and release (managed automatically). |
+
+The desktop app and the WebUI have the same browser built in (the **Addons** page), and addons can extend those interfaces too - see [ADDONS.md](ADDONS.md#extending-the-mcpanel-and-mcpanel-webui-interfaces-cli-140).
+
+---
+
+## Accounts & permissions
+
+User accounts, roles and permissions (what [MCPanel-WebUI](https://github.com/DippyCoder/MCPanel-WebUI) signs people in with) live in a **separate addon, [MCPanel-Accounts](https://github.com/DippyCoder/MCPanel-Accounts)** - the CLI itself doesn't ship them. The desktop app doesn't need it; the WebUI does:
+
+```bash
+mclib mclib install accounts                              # from MCLib (GitHub releases)
+mcpanel accounts passwd -u admin -p "a real password"     # the seeded login is admin / admin
+```
+
+Existing account data (`<data dir>/addon-data/accounts/accounts.db`) is picked up as-is - it never lived inside the CLI. See that repository's README for the full command reference.
 
 ---
 
@@ -362,8 +397,9 @@ mcpanel/
 ├── system.py       ← JDK detection (+ compatibility ranges), system info, update check
 ├── render.py       ← human-readable output + ANSI helpers
 ├── addons.py       ← addon discovery, loading and the `addons` command group
-├── bundled_addons/ ← addons that ship with the CLI
-│   └── accounts/   ← user accounts, roles and permissions (SQLite)
+├── errors.py       ← the API error contract + catalogue (`mcpanel api errors`)
+├── mclib.py        ← `mcpanel mclib` / `mclib`: addon libraries, GitHub/Codeberg releases
+├── bundled_addons/ ← first-party addons that ship with the CLI (none at the moment)
 └── http.py · util.py · config.py · paths.py
 ```
 
